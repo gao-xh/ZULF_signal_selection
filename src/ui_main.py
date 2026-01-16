@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
         val_layout.addWidget(self.thr_r2)
         self.thr_r2.valueChanged.connect(self.update_verdicts)
         
-        self.thr_slope = SliderSpinBox("Min Slope", *self._unpack(r['min_slope']), is_float=True)
+        self.thr_slope = SliderSpinBox("Min Slope", *self._unpack(r['min_slope']), is_float=True, decimals=3)
         val_layout.addWidget(self.thr_slope)
         self.thr_slope.valueChanged.connect(self.update_verdicts)
         

@@ -82,5 +82,5 @@ UI_PARAM_RANGES = {
     'noise_freq_min': (0.0, 2000.0, 1.0, DEFAULT_NOISE_FREQ_MIN),
     'noise_freq_max': (0.0, 2000.0, 1.0, DEFAULT_NOISE_FREQ_MAX),
     'local_noise_window': (10, 1000, 10, DEFAULT_LOCAL_NOISE_WINDOW),
-    'min_slope': (-0.5, 2.0, 0.1, DEFAULT_SLOPE_THRESHOLD)
+    'min_slope': (-0.5, 2.0, 0.001, DEFAULT_SLOPE_THRESHOLD)
 }
