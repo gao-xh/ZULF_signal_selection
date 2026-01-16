@@ -67,15 +67,10 @@ class PreviewWorker(QThread):
                 return
                 
             processor = Processor()
-            freqs, spec = processor.process(
+            freqs, spec = processor.process_fid(
                 avg_data, 
-                loader.sampling_rate,
-                self.params['conv_points'],
-                self.params['poly_order'],
-                self.params['apod_t2star'],
-                self.params['p0'],
-                self.params['phase_mode'],
-                self.params['enable_svd']
+                self.params,
+                loader.sampling_rate
             )
             self.finished.emit(freqs, spec, count)
         except Exception as e:
