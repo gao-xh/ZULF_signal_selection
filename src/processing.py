@@ -3,14 +3,15 @@ import numpy as np
 import scipy.signal
 import scipy.fft
 from pathlib import Path
+from src.config import (
+    REFERENCES_DIR, 
+    DEFAULT_SAVGOL_WINDOW, DEFAULT_SAVGOL_ORDER, 
+    DEFAULT_APOD_T2STAR, DEFAULT_SVD_RANK, DEFAULT_ENABLE_SVD
+)
 
 # Add references to path to allow importing ZULF libraries
-# Assuming structure: project_root/src/processing.py
-# Reference lib: project_root/references/Data-Process/
-project_root = Path(__file__).resolve().parent.parent
-ref_path = project_root / 'references' / 'Data-Process'
-if str(ref_path) not in sys.path:
-    sys.path.append(str(ref_path))
+if str(REFERENCES_DIR) not in sys.path:
+    sys.path.append(str(REFERENCES_DIR))
 
 # Try importing from reference library
 try:
@@ -33,26 +34,22 @@ class Processor:
     def get_default_params():
         return {
             # Savgol (Baseline)
-            'conv_points': 31,
-            'poly_order': 3,
+            'conv_points': DEFAULT_SAVGOL_WINDOW,
+            'poly_order': DEFAULT_SAVGOL_ORDER,
             
             # SVD
-            'enable_svd': False,
-            'svd_rank': 5,
+            'enable_svd': DEFAULT_ENABLE_SVD,
+            'svd_rank': DEFAULT_SVD_RANK,
             
             # Truncation
             'trunc_start': 0,
             'trunc_end': 0,
             
             # Apodization
-            'apod_t2star': 0.05, # Decay rate
+            'apod_t2star': DEFAULT_APOD_T2STAR, # Decay rate
             
             # Zero Filling
-            'zf_factor': 1, # 1 means double length, 0 means no ZF for this logical definition usually in standard tools? 
-                            # Wait, in the reference code:
-                            # zf_length = int(len * zf_factor)
-                            # np.concatenate((d, ones*mean)) -> this adds points.
-                            # Standard def: zf_factor 1 means 1x padding (doubling total size)
+            'zf_factor': 1, 
             
             # Phasing (Fixed parameters)
             'p0': 0.0,

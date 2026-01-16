@@ -2,6 +2,10 @@ import numpy as np
 from scipy.signal import find_peaks
 from scipy.stats import linregress
 import pandas as pd
+from src.config import (
+    CHECKPOINT_COUNT, PEAK_DETECTION_THRESHOLD, PEAK_SEARCH_WINDOW,
+    DEFAULT_R2_THRESHOLD, DEFAULT_SLOPE_THRESHOLD
+)
 
 class SignalValidator:
     """
@@ -14,7 +18,7 @@ class SignalValidator:
         self.evolution_data = {} # Stores traces for each candidate
         self.results = [] # Stores regression results
 
-    def run_validation(self, processing_params, checkpoints=None, detection_threshold=0.1, peak_window=5):
+    def run_validation(self, processing_params, checkpoints=None, detection_threshold=PEAK_DETECTION_THRESHOLD, peak_window=PEAK_SEARCH_WINDOW):
         """
         Main execution flow.
         
@@ -30,7 +34,7 @@ class SignalValidator:
         
         # 1. Setup Checkpoints
         if checkpoints is None:
-            checkpoints = self.loader.generate_checkpoints(num_points=20)
+            checkpoints = self.loader.generate_checkpoints(num_points=CHECKPOINT_COUNT)
             
         if not checkpoints:
             raise ValueError("No valid checkpoints generated. Check data folder.")
@@ -151,7 +155,7 @@ class SignalValidator:
             
             # Simple Verdict Logic
             # Can be refined later or adjusted in UI
-            is_signal = (r_squared > 0.8) and (slope > 0.1)
+            is_signal = (r_squared > DEFAULT_R2_THRESHOLD) and (slope > DEFAULT_SLOPE_THRESHOLD)
             
             summary.append({
                 'Freq_Hz': freq,

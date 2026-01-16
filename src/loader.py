@@ -2,59 +2,110 @@ import os
 import struct
 import numpy as np
 from pathlib import Path
+from src.config import SCAN_FILE_PATTERN, DEFAULT_SAMPLING_RATE
 
 class ProgressiveLoader:
     """
     Handles loading of NMR data in a progressive manner (cumulative averaging).
+    Now supports multiple folders combined sequentially.
     """
     
-    def __init__(self, folder_path):
+    def __init__(self, folder_paths):
         """
-        Initialize the loader with the experiment folder path.
+        Initialize the loader with one or more experiment folder paths.
         
         Args:
-            folder_path (str or Path): Path to the folder containing .dat files.
+            folder_paths (str, Path, or list): Path(s) to folder(s) containing .dat files.
         """
-        self.folder_path = Path(folder_path).resolve()
-        if not self.folder_path.exists():
-            raise FileNotFoundError(f"Folder not found: {self.folder_path}")
-            
-        # Discover all numeric .dat files (0.dat, 1.dat, ...)
-        all_files = list(self.folder_path.glob("*.dat"))
+        if isinstance(folder_paths, (str, Path)):
+            self.folder_paths = [Path(folder_paths).resolve()]
+        else:
+            self.folder_paths = [Path(p).resolve() for p in folder_paths]
+
         self.scan_files = []
-        for f in all_files:
-            if f.stem.isdigit():
-                self.scan_files.append(f)
         
-        # Sort by scan number (important for sequential processing)
-        self.scan_files.sort(key=lambda f: int(f.stem))
+        # Aggregate files from all folders in order
+        for folder in self.folder_paths:
+            if not folder.exists():
+                print(f"Warning: Folder not found: {folder}")
+                continue
+                
+            # Discover and sort files in this folder
+            # Using config for pattern
+            folder_files = list(folder.glob(SCAN_FILE_PATTERN))
+            valid_files = [f for f in folder_files if f.stem.isdigit()]
+            valid_files.sort(key=lambda f: int(f.stem))
+            
+            self.scan_files.extend(valid_files)
         
+        if not self.scan_files:
+            raise FileNotFoundError("No valid .dat files found in provided folders.")
+            
         self.total_scans = len(self.scan_files)
+        # Read sampling rate from the specific folder of the first file, or first valid folder
+        self._primary_folder = self.folder_paths[0] if self.folder_paths else Path(".")
         self.sampling_rate = self._read_sampling_rate()
         
     def _read_sampling_rate(self):
-        """Read sampling rate from 0.ini or default to 6000 Hz."""
-        ini_file = self.folder_path / '0.ini'
-        sampling_rate = 6000.0 # Default
-        
-        if ini_file.exists():
-            try:
-                with open(ini_file, 'r') as f:
-                    found_nmrduino = False
-                    for line in f:
-                        line = line.strip()
-                        if '[NMRduino]' in line:
-                            found_nmrduino = True
-                        elif found_nmrduino and 'SampleRate' in line:
-                            # format: SampleRate=6000
-                            parts = line.split('=')
-                            if len(parts) > 1:
-                                sampling_rate = float(parts[1])
-                            break
-            except Exception as e:
-                print(f"Warning: Could not read 0.ini: {e}")
+        """Read sampling rate from 0.ini of the first folder or default from config."""
+        sampling_rate = DEFAULT_SAMPLING_RATE
+        for folder in self.folder_paths:
+            ini_file = folder / '0.ini'
+            if ini_file.exists():
+                try:
+                    with open(ini_file, 'r') as f:
+                        found_nmrduino = False
+                        for line in f:
+                            line = line.strip()
+                            if '[NMRduino]' in line:
+                                found_nmrduino = True
+                            elif found_nmrduino and 'SampleRate' in line:
+                                # format: SampleRate=6000
+                                parts = line.split('=')
+                                if len(parts) > 1:
+                                    sampling_rate = float(parts[1])
+                                break
+                except Exception as e:
+                    print(f"Warning: Could not read 0.ini: {e}")
+                
+                # If we found a custom one, break, otherwise keep looking or stick to default
+                if sampling_rate != DEFAULT_SAMPLING_RATE:
+                    break
         
         return sampling_rate
+
+    def get_full_average(self):
+        """
+        Computes the average of all available scans.
+        Optimized to not store all individual scans in memory if possible, 
+        but load_all_scans does store them.
+        Here we use a running sum for memory efficiency.
+        """
+        sum_buffer = None
+        count = 0
+        
+        for fpath in self.scan_files:
+            data = self._read_single_scan(fpath)
+            if data is None:
+                continue
+                
+            if sum_buffer is None:
+                sum_buffer = np.zeros_like(data)
+                
+            if len(data) != len(sum_buffer):
+                 min_len = min(len(data), len(sum_buffer))
+                 sum_buffer = sum_buffer[:min_len] + data[:min_len]
+                 if len(sum_buffer) > min_len:
+                      sum_buffer = sum_buffer[:min_len]
+            else:
+                sum_buffer += data
+                
+            count += 1
+            
+        if count == 0:
+            return 0, None
+            
+        return count, sum_buffer / count
 
     def _read_single_scan(self, file_path):
         """

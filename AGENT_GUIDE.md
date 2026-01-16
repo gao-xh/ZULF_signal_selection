@@ -45,6 +45,7 @@
 ### 4. Implementation Strategy (Progressive Validation)
 
 #### A. Data Structure & incremental Loading
+*   **Configuration**: Use `src/config.py` for all global constants (paths, defaults, thresholds, UI ranges). Do not hardcode values in logic files.
 *   **Existing Format**: The reference system uses individual `.dat` files for each scan (e.g., `0.dat`, `1.dat`...) in a folder.
 *   **Optimization**: Instead of reloading files for each checkpoint, use **Cumulative Sum** (Running Sum).
     *   `Sum_N = Sum_{N-1} + Scan_N`

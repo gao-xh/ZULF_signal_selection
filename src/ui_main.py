@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
-    QTabWidget
+    QTabWidget, QLabel, QListWidget, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 
@@ -20,21 +20,22 @@ from src.ui_components import SliderSpinBox
 from src.loader import ProgressiveLoader
 from src.processing import Processor
 from src.validator import SignalValidator
+from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES
 
 class ValidationWorker(QThread):
     finished = Signal(object, object, object, object) # results_df, freqs, spec, evo_data
     error = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, folder, params):
+    def __init__(self, folder_paths, params):
         super().__init__()
-        self.folder = folder
+        self.folder_paths = folder_paths
         self.params = params
 
     def run(self):
         try:
             self.progress.emit("Loading Data...")
-            loader = ProgressiveLoader(self.folder)
+            loader = ProgressiveLoader(self.folder_paths)
             processor = Processor()
             validator = SignalValidator(loader, processor)
             
@@ -46,17 +47,58 @@ class ValidationWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+class PreviewWorker(QThread):
+    finished = Signal(object, object, int) # freqs, spec, count
+    error = Signal(str)
+    
+    def __init__(self, folder_paths, params):
+        super().__init__()
+        self.folder_paths = folder_paths
+        self.params = params
+
+    def run(self):
+        try:
+            loader = ProgressiveLoader(self.folder_paths)
+            count, avg_data = loader.get_full_average()
+            
+            if avg_data is None:
+                self.error.emit("No valid data found.")
+                return
+                
+            processor = Processor()
+            freqs, spec = processor.process(
+                avg_data, 
+                loader.sampling_rate,
+                self.params['conv_points'],
+                self.params['poly_order'],
+                self.params['apod_t2star'],
+                self.params['p0'],
+                self.params['phase_mode'],
+                self.params['enable_svd']
+            )
+            self.finished.emit(freqs, spec, count)
+        except Exception as e:
+            self.error.emit(str(e))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ZULF Signal Selection - Progressive Validator")
-        self.resize(1200, 800)
+        self.setWindowTitle(UI_WINDOW_TITLE)
+        self.resize(*UI_WINDOW_SIZE)
+        
+        self.folder_paths = []
         
         self.current_results = None
         self.current_freqs = None
         self.current_spec = None
+        self.current_evo_data = None
         
         self._setup_ui()
+    
+    def _unpack(self, range_tuple):
+        # Config tuple: (min, max, step, default)
+        # Needed for SliderSpinBox: (min, max, default, step)
+        return range_tuple[0], range_tuple[1], range_tuple[3], range_tuple[2]
         
     def _setup_ui(self):
         central = QWidget()
@@ -68,21 +110,45 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_panel.setFixedWidth(300)
         
+        # 0. Data Selection
+        folder_group = QGroupBox("Data Selection")
+        folder_layout = QVBoxLayout()
+        self.folder_list = QListWidget()
+        self.folder_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.folder_list.setFixedHeight(100)
+        folder_layout.addWidget(self.folder_list)
+        
+        btn_layout = QHBoxLayout()
+        self.btn_add_folder = QPushButton("Add Folder(s)")
+        self.btn_add_folder.clicked.connect(self.add_folders)
+        btn_layout.addWidget(self.btn_add_folder)
+        
+        self.btn_clear_folders = QPushButton("Clear")
+        self.btn_clear_folders.clicked.connect(self.clear_folders)
+        btn_layout.addWidget(self.btn_clear_folders)
+        folder_layout.addLayout(btn_layout)
+        folder_group.setLayout(folder_layout)
+        left_layout.addWidget(folder_group)
+        
         # 1. Processing Controls
         proc_group = QGroupBox("Processing Parameters")
         proc_layout = QVBoxLayout()
         
-        self.savgol_window = SliderSpinBox("Savgol Window", 1, 101, 31, step=2)
+        r = UI_PARAM_RANGES
+        
+        self.savgol_window = SliderSpinBox("Savgol Window", *self._unpack(r['savgol_window']))
         proc_layout.addWidget(self.savgol_window)
         
-        self.savgol_order = SliderSpinBox("Savgol Order", 1, 6, 3)
+        self.savgol_order = SliderSpinBox("Savgol Order", *self._unpack(r['savgol_order']))
         proc_layout.addWidget(self.savgol_order)
         
-        self.apod_rate = SliderSpinBox("Apod T2* (s)", 0.01, 1.0, 0.05, is_float=True, decimals=3, step=0.01)
+        self.apod_rate = SliderSpinBox("Apod T2* (s)", *self._unpack(r['apod_t2star']), is_float=True, decimals=3)
         proc_layout.addWidget(self.apod_rate)
 
         # Fixed Phase
-        self.p0_slider = SliderSpinBox("Phase 0", -180, 180, 0, is_float=True)
+        self.p0_slider = SliderSpinBox("Phase 0", *self._unpack(r['phase_0']), is_float=True)
+        # Manually fix step since config tuple has step
+        # Ah wait, SliderSpinBox signature is (label, min, max, val, step, is_float, decimals)
         proc_layout.addWidget(self.p0_slider)
         
         proc_group.setLayout(proc_layout)
@@ -92,11 +158,11 @@ class MainWindow(QMainWindow):
         val_group = QGroupBox("Decision Thresholds")
         val_layout = QVBoxLayout()
         
-        self.thr_r2 = SliderSpinBox("Min R2 Score", 0.0, 1.0, 0.8, is_float=True)
+        self.thr_r2 = SliderSpinBox("Min R2 Score", *self._unpack(r['min_r2']), is_float=True)
         val_layout.addWidget(self.thr_r2)
         self.thr_r2.valueChanged.connect(self.update_verdicts)
         
-        self.thr_slope = SliderSpinBox("Min Slope", -0.5, 2.0, 0.1, is_float=True)
+        self.thr_slope = SliderSpinBox("Min Slope", *self._unpack(r['min_slope']), is_float=True)
         val_layout.addWidget(self.thr_slope)
         self.thr_slope.valueChanged.connect(self.update_verdicts)
         
@@ -104,10 +170,21 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(val_group)
         
         # Action Buttons
-        self.btn_load = QPushButton("Load Folder & Run Analysis")
-        self.btn_load.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
-        self.btn_load.clicked.connect(self.start_analysis)
-        left_layout.addWidget(self.btn_load)
+        workflow_group = QGroupBox("Analysis Workflow")
+        workflow_layout = QVBoxLayout()
+        
+        self.btn_preview = QPushButton("1. Process & Preview")
+        self.btn_preview.clicked.connect(self.run_preview)
+        workflow_layout.addWidget(self.btn_preview)
+        
+        self.btn_run = QPushButton("2. Run Progressive Analysis")
+        self.btn_run.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_run.clicked.connect(self.start_analysis)
+        self.btn_run.setEnabled(False) 
+        workflow_layout.addWidget(self.btn_run)
+        
+        workflow_group.setLayout(workflow_layout)
+        left_layout.addWidget(workflow_group)
         
         self.progress_bar = QProgressBar()
         left_layout.addWidget(self.progress_bar)
@@ -143,26 +220,76 @@ class MainWindow(QMainWindow):
         right_splitter.addWidget(evo_container)
         
         main_layout.addWidget(right_splitter)
-        
-    def start_analysis(self):
+
+    def add_folders(self):
+        # We allow multiple dirs. Qt QFileDialog.getExistingDirectory only does one.
+        # But we can call it multiple times or use a workaround.
+        # Standard approach: Call valid folder. User can add more.
         folder = QFileDialog.getExistingDirectory(self, "Select Experiment Folder")
-        if not folder:
-            return
-            
-        params = {
+        if folder:
+            path = str(Path(folder).resolve())
+            if path not in self.folder_paths:
+                self.folder_paths.append(path)
+                self.folder_list.addItem(path)
+
+    def clear_folders(self):
+        self.folder_paths = []
+        self.folder_list.clear()
+        self.btn_run.setEnabled(False)
+
+    def _get_process_params(self):
+        return {
             'conv_points': int(self.savgol_window.value()) if int(self.savgol_window.value()) % 2 != 0 else int(self.savgol_window.value()) + 1,
             'poly_order': int(self.savgol_order.value()),
             'apod_t2star': float(self.apod_rate.value()),
             'p0': float(self.p0_slider.value()),
-            'phase_mode': 'auto', # Auto for N_max by default
+            'phase_mode': 'manual', # Preview is usually manual or fixed
             'trunc_start': 0,
-            'enable_svd': True # Default enable for better quality
+            'enable_svd': True 
         }
+
+    def run_preview(self):
+        if not self.folder_paths:
+            QMessageBox.warning(self, "No Data", "Please add at least one folder.")
+            return
+            
+        params = self._get_process_params()
         
-        self.btn_load.setEnabled(False)
+        self.btn_preview.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.statusBar().showMessage("Generating Preview...")
         self.progress_bar.setRange(0, 0) # Indeterminate
         
-        self.worker = ValidationWorker(folder, params)
+        self.preview_worker = PreviewWorker(self.folder_paths, params)
+        self.preview_worker.finished.connect(self.on_preview_finished)
+        self.preview_worker.error.connect(self.on_error)
+        self.preview_worker.start()
+        
+    def on_preview_finished(self, freqs, spec, count):
+        self.btn_preview.setEnabled(True)
+        self.btn_run.setEnabled(True)
+        self.progress_bar.setRange(0, 100)
+        
+        self.current_freqs = freqs
+        self.current_spec = spec
+        self.current_results = None 
+        
+        self.plot_spectrum_traffic_light()
+        self.statusBar().showMessage(f"Preview generated from {count} total scans.")
+
+        
+    def start_analysis(self):
+        if not self.folder_paths:
+            QMessageBox.warning(self, "No Data", "Please add at least one folder.")
+            return
+
+        params = self._get_process_params()
+        
+        self.btn_run.setEnabled(False)
+        self.btn_preview.setEnabled(False)
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        
+        self.worker = ValidationWorker(self.folder_paths, params)
         self.worker.finished.connect(self.on_analysis_finished)
         self.worker.error.connect(self.on_error)
         self.worker.progress.connect(self.update_status)
@@ -172,13 +299,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
         
     def on_error(self, msg):
-        self.btn_load.setEnabled(True)
+        self.btn_run.setEnabled(True)
+        self.btn_preview.setEnabled(True)
         self.progress_bar.setRange(0, 100)
         self.statusBar().showMessage("Error")
         QMessageBox.critical(self, "Analysis Failed", msg)
         
     def on_analysis_finished(self, results, freqs, spec, evo_data):
-        self.btn_load.setEnabled(True)
+        self.btn_run.setEnabled(True)
+        self.btn_preview.setEnabled(True)
         self.progress_bar.setRange(0, 100)
         self.statusBar().showMessage("Analysis Complete")
         
@@ -212,6 +341,10 @@ class MainWindow(QMainWindow):
     def plot_spectrum_traffic_light(self):
         self.ax_spec.clear()
         
+        if self.current_freqs is None or self.current_spec is None:
+            self.canvas_spec.draw()
+            return
+        
         # Plot Magnitude Spectrum
         freqs = self.current_freqs
         mag = np.abs(self.current_spec)
@@ -220,28 +353,29 @@ class MainWindow(QMainWindow):
         # Plot Candidates
         df = self.current_results
         
-        signals = df[df['Verdict'] == True]
-        noise = df[df['Verdict'] == False]
-        
-        # Plot Green Signals
-        if not signals.empty:
-            self.ax_spec.scatter(
-                signals['Freq_Hz'], 
-                mag[signals['Index'].astype(int)], 
-                c='g', s=100, marker='o', alpha=0.8, edgecolors='k', 
-                label='Signal (Validated)', picker=5
-            )
+        if df is not None:
+            signals = df[df['Verdict'] == True]
+            noise = df[df['Verdict'] == False]
             
-        # Plot Red Noise
-        if not noise.empty:
-            self.ax_spec.scatter(
-                noise['Freq_Hz'], 
-                mag[noise['Index'].astype(int)], 
-                c='r', s=50, marker='x', alpha=0.6, 
-                label='Noise', picker=5
-            )
+            # Plot Green Signals
+            if not signals.empty:
+                self.ax_spec.scatter(
+                    signals['Freq_Hz'], 
+                    mag[signals['Index'].astype(int)], 
+                    c='g', s=100, marker='o', alpha=0.8, edgecolors='k', 
+                    label='Signal (Validated)', picker=5
+                )
+                
+            # Plot Red Noise
+            if not noise.empty:
+                self.ax_spec.scatter(
+                    noise['Freq_Hz'], 
+                    mag[noise['Index'].astype(int)], 
+                    c='r', s=50, marker='x', alpha=0.6, 
+                    label='Noise', picker=5
+                )
             
-        self.ax_spec.set_title("Spectral Validation (Click points for details)")
+        self.ax_spec.set_title("Spectral Validation" + (" (Preview)" if df is None else " (Click points for details)"))
         self.ax_spec.set_xlabel("Frequency (Hz)")
         self.ax_spec.set_ylabel("Amplitude")
         self.ax_spec.legend()
