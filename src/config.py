@@ -46,7 +46,7 @@ DEFAULT_SLOPE_THRESHOLD = 0.1
 # --- 4. Processing Defaults ---
 # Default parameters for the signal processing pipeline
 DEFAULT_SAVGOL_WINDOW = 31
-DEFAULT_SAVGOL_ORDER = 3
+DEFAULT_SAVGOL_ORDER = 2
 DEFAULT_APOD_T2STAR = 0.05  # Decay rate for exponential apodization
 DEFAULT_SVD_RANK = 5
 DEFAULT_ENABLE_SVD = True
@@ -61,8 +61,10 @@ UI_WINDOW_SIZE = (1200, 800)
 UI_PARAM_RANGES = {
     'savgol_window': (1, 101, 2, DEFAULT_SAVGOL_WINDOW),
     'savgol_order': (1, 6, 1, DEFAULT_SAVGOL_ORDER),
-    'apod_t2star': (0.01, 1.0, 0.01, DEFAULT_APOD_T2STAR),
+    'apod_t2star': (0.0001, 10.0, 0.001, DEFAULT_APOD_T2STAR),
     'phase_0': (-180, 180, 1, 0.0),
+    'trunc_start': (0, 3000, 1, 0), # Enhanced range matching reference
+    'trunc_end': (0, 60000, 10, 0), # Reference range is 0-60000
     'min_r2': (0.0, 1.0, 0.01, DEFAULT_R2_THRESHOLD),
     'min_slope': (-0.5, 2.0, 0.1, DEFAULT_SLOPE_THRESHOLD)
 }

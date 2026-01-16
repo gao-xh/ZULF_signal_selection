@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
-    QTabWidget, QLabel, QListWidget, QAbstractItemView
+    QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 
@@ -145,6 +145,13 @@ class MainWindow(QMainWindow):
         self.apod_rate = SliderSpinBox("Apod T2* (s)", *self._unpack(r['apod_t2star']), is_float=True, decimals=3)
         proc_layout.addWidget(self.apod_rate)
 
+        # Truncation
+        self.trunc_slider = SliderSpinBox("Trunc Start (pts)", *self._unpack(r['trunc_start']))
+        proc_layout.addWidget(self.trunc_slider)
+        
+        self.trunc_end_slider = SliderSpinBox("Trunc End (pts)", *self._unpack(r['trunc_end']))
+        proc_layout.addWidget(self.trunc_end_slider)
+
         # Fixed Phase
         self.p0_slider = SliderSpinBox("Phase 0", *self._unpack(r['phase_0']), is_float=True)
         # Manually fix step since config tuple has step
@@ -206,6 +213,35 @@ class MainWindow(QMainWindow):
         spec_layout = QVBoxLayout(spec_container)
         spec_layout.addWidget(NavigationToolbar(self.canvas_spec, spec_container))
         spec_layout.addWidget(self.canvas_spec)
+        
+        # Spectrum Controls (Range)
+        range_group = QGroupBox("View Control")
+        range_layout = QHBoxLayout()
+        range_layout.setContentsMargins(5, 5, 5, 5)
+        
+        range_layout.addWidget(QLabel("Freq Range (Hz):"))
+        
+        self.freq_min = QDoubleSpinBox()
+        self.freq_min.setRange(0, 1000)
+        self.freq_min.setValue(0)
+        self.freq_min.setSuffix(" Hz")
+        range_layout.addWidget(self.freq_min)
+        
+        range_layout.addWidget(QLabel("-"))
+        
+        self.freq_max = QDoubleSpinBox()
+        self.freq_max.setRange(0, 1000)
+        self.freq_max.setValue(100)
+        self.freq_max.setSuffix(" Hz")
+        range_layout.addWidget(self.freq_max)
+        
+        btn_update_range = QPushButton("Update")
+        btn_update_range.clicked.connect(self.plot_spectrum_traffic_light)
+        range_layout.addWidget(btn_update_range)
+        
+        range_group.setLayout(range_layout)
+        spec_layout.addWidget(range_group)
+
         right_splitter.addWidget(spec_container)
         
         # Bottom: Evolution View
@@ -243,8 +279,9 @@ class MainWindow(QMainWindow):
             'poly_order': int(self.savgol_order.value()),
             'apod_t2star': float(self.apod_rate.value()),
             'p0': float(self.p0_slider.value()),
+            'trunc_start': int(self.trunc_slider.value()),
+            'trunc_end': int(self.trunc_end_slider.value()),
             'phase_mode': 'manual', # Preview is usually manual or fixed
-            'trunc_start': 0,
             'enable_svd': True 
         }
 
@@ -345,17 +382,26 @@ class MainWindow(QMainWindow):
             self.canvas_spec.draw()
             return
         
-        # Plot Magnitude Spectrum
+        # Plot Magnitude Spectrum (Positive frequencies only)
         freqs = self.current_freqs
         mag = np.abs(self.current_spec)
-        self.ax_spec.plot(freqs, mag, 'k-', linewidth=0.8, alpha=0.6, label='Spectrum (N_max)')
+        
+        # Mask for positive frequencies
+        pos_mask = freqs >= 0
+        pos_freqs = freqs[pos_mask]
+        pos_mag = mag[pos_mask]
+        
+        self.ax_spec.plot(pos_freqs, pos_mag, 'k-', linewidth=0.8, alpha=0.6, label='Spectrum (N_max)')
         
         # Plot Candidates
         df = self.current_results
         
         if df is not None:
-            signals = df[df['Verdict'] == True]
-            noise = df[df['Verdict'] == False]
+            # Filter candidates for positive frequencies
+            df_pos = df[df['Freq_Hz'] >= 0]
+            
+            signals = df_pos[df_pos['Verdict'] == True]
+            noise = df_pos[df_pos['Verdict'] == False]
             
             # Plot Green Signals
             if not signals.empty:
@@ -374,11 +420,28 @@ class MainWindow(QMainWindow):
                     c='r', s=50, marker='x', alpha=0.6, 
                     label='Noise', picker=5
                 )
-            
+        
+        # Adjust X-Axis to show only positive part or user selected range
+        x_min = self.freq_min.value()
+        x_max = self.freq_max.value()
+        
+        # If default 0-100 is untouched and data goes further, maybe auto-scale?
+        # But user wants control. Let's respect the spinboxes.
+        self.ax_spec.set_xlim(left=x_min, right=x_max)
+        
+        # Auto-scale Y based on visible X range
+        if len(pos_freqs) > 0:
+            mask = (pos_freqs >= x_min) & (pos_freqs <= x_max)
+            if np.any(mask):
+                y_visible = pos_mag[mask]
+                if len(y_visible) > 0:
+                    y_max = np.max(y_visible)
+                    self.ax_spec.set_ylim(bottom=0, top=y_max * 1.1)
+
         self.ax_spec.set_title("Spectral Validation" + (" (Preview)" if df is None else " (Click points for details)"))
         self.ax_spec.set_xlabel("Frequency (Hz)")
         self.ax_spec.set_ylabel("Amplitude")
-        self.ax_spec.legend()
+        self.ax_spec.legend(loc='upper right')
         self.fig_spec.tight_layout()
         self.canvas_spec.draw()
         
