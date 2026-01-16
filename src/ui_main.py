@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
     QCheckBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 
 import matplotlib
 matplotlib.use('QtAgg')
@@ -22,6 +22,25 @@ from src.loader import ProgressiveLoader
 from src.processing import Processor
 from src.validator import SignalValidator
 from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES
+
+class LoaderWorker(QThread):
+    finished = Signal(object, float, int) # avg_data, sampling_rate, scan_count
+    error = Signal(str)
+
+    def __init__(self, folder_paths):
+        super().__init__()
+        self.folder_paths = folder_paths
+
+    def run(self):
+        try:
+            loader = ProgressiveLoader(self.folder_paths)
+            count, avg_data = loader.get_full_average()
+            if avg_data is None:
+                self.error.emit("No valid data found.")
+                return
+            self.finished.emit(avg_data, loader.sampling_rate, count)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class ValidationWorker(QThread):
     finished = Signal(object, object, object, object) # results_df, freqs, spec, evo_data
@@ -48,31 +67,37 @@ class ValidationWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-class PreviewWorker(QThread):
-    finished = Signal(object, object, int) # freqs, spec, count
+class ProcessWorker(QThread):
+    finished = Signal(object, object, object) # freqs, spec, time_data
     error = Signal(str)
     
-    def __init__(self, folder_paths, params):
+    def __init__(self, raw_data, params, sampling_rate):
         super().__init__()
-        self.folder_paths = folder_paths
+        self.raw_data = raw_data
         self.params = params
+        self.sampling_rate = sampling_rate
 
     def run(self):
         try:
-            loader = ProgressiveLoader(self.folder_paths)
-            count, avg_data = loader.get_full_average()
-            
-            if avg_data is None:
-                self.error.emit("No valid data found.")
-                return
-                
             processor = Processor()
+            # We modify process_fid to return time domain data too if needed, 
+            # or we just rely on the fact that process_fid does the steps.
+            # But wait, existing process_fid returns (freqs, spec). 
+            # We might want the processed time domain signal for plotting.
+            
+            # Let's peek at processing.py again to see if we can get time data easily.
+            # For now we'll just run it as is.
             freqs, spec = processor.process_fid(
-                avg_data, 
+                self.raw_data, 
                 self.params,
-                loader.sampling_rate
+                self.sampling_rate
             )
-            self.finished.emit(freqs, spec, count)
+            # To get time data corresponding to this spectrum (processed), 
+            # we rely on IFFT or we change the processor to return it. 
+            # For visualization, IFFT of the spectrum is close enough to "processed result".
+            processed_time = np.fft.ifft(spec)
+            
+            self.finished.emit(freqs, spec, processed_time)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -80,14 +105,25 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(UI_WINDOW_TITLE)
-        self.resize(*UI_WINDOW_SIZE)
+        self.resize(1400, 900) # Larger window for extra plot
         
         self.folder_paths = []
+        
+        # Data Model
+        self.raw_avg_data = None # Holds the raw averaged (accumulated) FID
+        self.loader_sampling_rate = 0.0
         
         self.current_results = None
         self.current_freqs = None
         self.current_spec = None
         self.current_evo_data = None
+        self.current_processed_time = None
+        
+        # Debounce Timer for sliders
+        self.update_timer = QTimer()
+        self.update_timer.setSingleShot(True)
+        self.update_timer.setInterval(300) # 300ms delay
+        self.update_timer.timeout.connect(self.run_processing)
         
         self._setup_ui()
     
@@ -132,29 +168,44 @@ class MainWindow(QMainWindow):
         
         r = UI_PARAM_RANGES
         
+        # SVD Checkbox
+        self.chk_svd = QCheckBox("Enable SVD Denoising")
+        self.chk_svd.setChecked(True)
+        self.chk_svd.setToolTip("Enable Singular Value Decomposition (Slow but effective)")
+        proc_layout.addWidget(self.chk_svd)
+        self.chk_svd.stateChanged.connect(self.request_processing_update)
+
         self.savgol_window = SliderSpinBox("Savgol Window", *self._unpack(r['savgol_window']))
         proc_layout.addWidget(self.savgol_window)
+        # Connect signals
+        self.savgol_window.valueChanged.connect(self.request_processing_update)
         
         self.savgol_order = SliderSpinBox("Savgol Order", *self._unpack(r['savgol_order']))
         proc_layout.addWidget(self.savgol_order)
+        self.savgol_order.valueChanged.connect(self.request_processing_update)
         
         self.apod_rate = SliderSpinBox("Apod T2* (s)", *self._unpack(r['apod_t2star']), is_float=True, decimals=3)
         proc_layout.addWidget(self.apod_rate)
+        self.apod_rate.valueChanged.connect(self.request_processing_update)
 
         # Truncation
         self.trunc_slider = SliderSpinBox("Trunc Start (pts)", *self._unpack(r['trunc_start']))
         proc_layout.addWidget(self.trunc_slider)
+        self.trunc_slider.valueChanged.connect(self.request_processing_update)
         
         self.trunc_end_slider = SliderSpinBox("Trunc End (pts)", *self._unpack(r['trunc_end']))
         proc_layout.addWidget(self.trunc_end_slider)
+        self.trunc_end_slider.valueChanged.connect(self.request_processing_update)
 
         # Fixed Phase
         self.p0_slider = SliderSpinBox("Phase 0 (deg)", *self._unpack(r['phase_0']), is_float=True)
         proc_layout.addWidget(self.p0_slider)
+        self.p0_slider.valueChanged.connect(self.request_processing_update)
 
         self.p1_slider = SliderSpinBox("Phase 1 (deg)", *self._unpack(r['phase_1']), is_float=True)
         # Manually set a smaller visual step if needed, but config step 100 is good for large p1
         proc_layout.addWidget(self.p1_slider)
+        self.p1_slider.valueChanged.connect(self.request_processing_update)
         
         proc_group.setLayout(proc_layout)
         left_layout.addWidget(proc_group)
@@ -178,9 +229,14 @@ class MainWindow(QMainWindow):
         workflow_group = QGroupBox("Analysis Workflow")
         workflow_layout = QVBoxLayout()
         
-        self.btn_preview = QPushButton("1. Process & Preview")
-        self.btn_preview.clicked.connect(self.run_preview)
-        workflow_layout.addWidget(self.btn_preview)
+        self.btn_load = QPushButton("1. Load Data")
+        self.btn_load.clicked.connect(self.run_loading)
+        workflow_layout.addWidget(self.btn_load)
+        
+        # Explicit Process button (in case SVD is heavy and auto-update is annoying)
+        self.btn_reprocess = QPushButton("Refresh Processing")
+        self.btn_reprocess.clicked.connect(self.run_processing)
+        workflow_layout.addWidget(self.btn_reprocess)
         
         self.btn_run = QPushButton("2. Run Progressive Analysis")
         self.btn_run.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
@@ -199,6 +255,18 @@ class MainWindow(QMainWindow):
         
         # --- Right Panel: Visualization ---
         right_splitter = QSplitter(Qt.Vertical)
+        
+        # 0. Time Domain View (New)
+        self.fig_time = Figure(figsize=(8, 3))
+        self.canvas_time = FigureCanvas(self.fig_time)
+        self.ax_time = self.fig_time.add_subplot(111)
+        
+        time_container = QWidget()
+        time_layout = QVBoxLayout(time_container)
+        time_layout.addWidget(NavigationToolbar(self.canvas_time, time_container))
+        time_layout.addWidget(self.canvas_time)
+        
+        right_splitter.addWidget(time_container)
         
         # Top: Spectrum View
         self.fig_spec = Figure(figsize=(8, 4))
@@ -251,7 +319,7 @@ class MainWindow(QMainWindow):
         self.btn_view_mag.clicked.connect(self.update_view_mode)
         view_mode_layout.addWidget(self.btn_view_mag)
 
-        self.btn_view_real = QPushButton("Real (Abs)")
+        self.btn_view_real = QPushButton("Real")
         self.btn_view_real.setCheckable(True)
         self.btn_view_real.clicked.connect(self.update_view_mode)
         view_mode_layout.addWidget(self.btn_view_real)
@@ -320,55 +388,83 @@ class MainWindow(QMainWindow):
             'trunc_start': int(self.trunc_slider.value()),
             'trunc_end': int(self.trunc_end_slider.value()),
             'phase_mode': 'manual', 
-            'enable_svd': True,
+            'enable_svd': self.chk_svd.isChecked(),
             'detect_mode': detect_mode # Pass to worker -> validator
         }
 
-    def run_preview(self):
+    def request_processing_update(self):
+        if self.raw_avg_data is not None:
+            self.update_timer.start()
+
+    def run_loading(self):
         if not self.folder_paths:
             QMessageBox.warning(self, "No Data", "Please add at least one folder.")
             return
-            
-        params = self._get_process_params()
-        
-        self.btn_preview.setEnabled(False)
+
+        self.btn_load.setEnabled(False)
+        self.btn_reprocess.setEnabled(False)
         self.btn_run.setEnabled(False)
-        self.statusBar().showMessage("Generating Preview...")
         self.progress_bar.setRange(0, 0) # Indeterminate
+        self.statusBar().showMessage("Loading and Averaging Data...")
         
-        self.preview_worker = PreviewWorker(self.folder_paths, params)
-        self.preview_worker.finished.connect(self.on_preview_finished)
-        self.preview_worker.error.connect(self.on_error)
-        self.preview_worker.start()
+        self.loader_worker = LoaderWorker(self.folder_paths)
+        self.loader_worker.finished.connect(self.on_loading_finished)
+        self.loader_worker.error.connect(self.on_error)
+        self.loader_worker.start()
+
+    def on_loading_finished(self, avg_data, sampling_rate, count):
+        self.raw_avg_data = avg_data
+        self.loader_sampling_rate = sampling_rate
         
-    def on_preview_finished(self, freqs, spec, count):
-        self.btn_preview.setEnabled(True)
-        self.btn_run.setEnabled(True)
+        self.btn_load.setEnabled(True)
+        self.btn_reprocess.setEnabled(True)
         self.progress_bar.setRange(0, 100)
+        self.statusBar().showMessage(f"Loaded {count} scans. Running initial processing...")
         
+        # Auto trigger processing
+        self.run_processing()
+
+    def run_processing(self):
+        if self.raw_avg_data is None:
+            return
+
+        params = self._get_process_params()
+        self.statusBar().showMessage("Processing...")
+        
+        self.proc_worker = ProcessWorker(self.raw_avg_data, params, self.loader_sampling_rate)
+        self.proc_worker.finished.connect(self.on_processing_finished)
+        self.proc_worker.error.connect(self.on_error)
+        self.proc_worker.start()
+
+    def on_processing_finished(self, freqs, spec, time_data):
         self.current_freqs = freqs
         self.current_spec = spec
-        self.current_results = None 
+        self.current_processed_time = time_data
         
+        self.btn_run.setEnabled(True)
+        self.statusBar().showMessage("Processing Complete.")
+        
+        self.plot_time_domain()
         self.plot_spectrum_traffic_light()
-        self.statusBar().showMessage(f"Preview generated from {count} total scans.")
 
-        
-    def start_analysis(self):
-        if not self.folder_paths:
-            QMessageBox.warning(self, "No Data", "Please add at least one folder.")
+    def plot_time_domain(self):
+        self.ax_time.clear()
+        if self.current_processed_time is None:
+            self.canvas_time.draw()
             return
+            
+        # Plot Real part of time domain usually
+        t = np.arange(len(self.current_processed_time)) / self.loader_sampling_rate
+        y = np.real(self.current_processed_time)
+        
+        self.ax_time.plot(t, y, 'b-', linewidth=0.5)
+        self.ax_time.set_title("Time Domain Signal (Processed)")
+        self.ax_time.set_xlabel("Time (s)")
+        self.ax_time.set_ylabel("Amplitude")
+        self.ax_time.grid(True, linestyle='--', alpha=0.5)
 
-        params = self._get_process_params()
-        
-        self.btn_run.setEnabled(False)
-        self.btn_preview.setEnabled(False)
-        self.progress_bar.setRange(0, 0) # Indeterminate
-        
-        self.worker = ValidationWorker(self.folder_paths, params)
-        self.worker.finished.connect(self.on_analysis_finished)
-        self.worker.error.connect(self.on_error)
-        self.worker.progress.connect(self.update_status)
+        self.fig_time.tight_layout()
+        self.canvas_time.draw()
         self.worker.start()
         
     def update_status(self, msg):
