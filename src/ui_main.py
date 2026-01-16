@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
         workflow_group = QGroupBox("Analysis Workflow")
         workflow_layout = QVBoxLayout()
         
-        self.btn_load = QPushButton("1. Load Data")
+        self.btn_load = QPushButton("Load Data")
         self.btn_load.clicked.connect(self.run_loading)
         workflow_layout.addWidget(self.btn_load)
         
@@ -238,7 +238,7 @@ class MainWindow(QMainWindow):
         self.btn_reprocess.clicked.connect(self.run_processing)
         workflow_layout.addWidget(self.btn_reprocess)
         
-        self.btn_run = QPushButton("2. Run Progressive Analysis")
+        self.btn_run = QPushButton("Run Progressive Analysis")
         self.btn_run.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.btn_run.clicked.connect(self.start_analysis)
         self.btn_run.setEnabled(False) 
