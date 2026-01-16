@@ -6,7 +6,8 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
-    QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox
+    QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
+    QCheckBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 
@@ -242,6 +243,38 @@ class MainWindow(QMainWindow):
         range_group.setLayout(range_layout)
         spec_layout.addWidget(range_group)
 
+        # Spectrum View Mode (Real/Imag/Mag)
+        view_mode_group = QGroupBox("Spectral Component")
+        view_mode_layout = QHBoxLayout()
+        view_mode_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.btn_view_mag = QPushButton("Magnitude")
+        self.btn_view_mag.setCheckable(True)
+        self.btn_view_mag.setChecked(True)
+        self.btn_view_mag.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_mag)
+
+        self.btn_view_real = QPushButton("Real (Abs)")
+        self.btn_view_real.setCheckable(True)
+        self.btn_view_real.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_real)
+
+        self.btn_view_imag = QPushButton("Imaginary")
+        self.btn_view_imag.setCheckable(True)
+        self.btn_view_imag.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_imag)
+        
+        # Exclusive selection logic is manual or use QButtonGroup, simplistic here:
+        self.view_buttons = [self.btn_view_mag, self.btn_view_real, self.btn_view_imag]
+
+        self.chk_view_abs = QCheckBox("Show Abs")
+        self.chk_view_abs.setChecked(False)
+        self.chk_view_abs.stateChanged.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.chk_view_abs)
+
+        view_mode_group.setLayout(view_mode_layout)
+        spec_layout.addWidget(view_mode_group)
+
         right_splitter.addWidget(spec_container)
         
         # Bottom: Evolution View
@@ -274,6 +307,13 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(False)
 
     def _get_process_params(self):
+        # Determine current detection mode
+        detect_mode = 'mag'
+        if self.btn_view_real.isChecked():
+            detect_mode = 'real'
+        elif self.btn_view_imag.isChecked():
+            detect_mode = 'imag'
+            
         return {
             'conv_points': int(self.savgol_window.value()) if int(self.savgol_window.value()) % 2 != 0 else int(self.savgol_window.value()) + 1,
             'poly_order': int(self.savgol_order.value()),
@@ -281,8 +321,9 @@ class MainWindow(QMainWindow):
             'p0': float(self.p0_slider.value()),
             'trunc_start': int(self.trunc_slider.value()),
             'trunc_end': int(self.trunc_end_slider.value()),
-            'phase_mode': 'manual', # Preview is usually manual or fixed
-            'enable_svd': True 
+            'phase_mode': 'manual', 
+            'enable_svd': True,
+            'detect_mode': detect_mode # Pass to worker -> validator
         }
 
     def run_preview(self):
@@ -375,6 +416,18 @@ class MainWindow(QMainWindow):
         self.current_results['Verdict'] = self.current_results.apply(judge, axis=1)
         self.plot_spectrum_traffic_light()
         
+    def update_view_mode(self):
+        sender = self.sender()
+        if not sender: return
+        
+        # Enforce exclusivity
+        for btn in self.view_buttons:
+            if btn != sender:
+                btn.setChecked(False)
+        sender.setChecked(True)
+        
+        self.plot_spectrum_traffic_light()
+
     def plot_spectrum_traffic_light(self):
         self.ax_spec.clear()
         
@@ -382,18 +435,41 @@ class MainWindow(QMainWindow):
             self.canvas_spec.draw()
             return
         
-        # Plot Magnitude Spectrum (Positive frequencies only)
+        # Determine data to plot based on view mode
+        spec_data = self.current_spec
+        mode_label = "Magnitude"
+        
+        if self.btn_view_real.isChecked():
+            # Usually we want Real component for Phasing
+            plot_data = np.real(spec_data)
+            mode_label = "Real"
+        elif self.btn_view_imag.isChecked():
+            plot_data = np.imag(spec_data)
+            mode_label = "Imaginary"
+        else:
+            # Default Magnitude
+            plot_data = np.abs(spec_data)
+            mode_label = "Magnitude"
+
+        # Apply absolute value if requested
+        if self.chk_view_abs.isChecked():
+            plot_data = np.abs(plot_data)
+            mode_label += " (Abs)"
+
+        # Plot Spectrum (Positive frequencies only)
         freqs = self.current_freqs
-        mag = np.abs(self.current_spec)
         
         # Mask for positive frequencies
         pos_mask = freqs >= 0
         pos_freqs = freqs[pos_mask]
-        pos_mag = mag[pos_mask]
+        pos_data = plot_data[pos_mask]
         
-        self.ax_spec.plot(pos_freqs, pos_mag, 'k-', linewidth=0.8, alpha=0.6, label='Spectrum (N_max)')
+        self.ax_spec.plot(pos_freqs, pos_data, 'k-', linewidth=0.8, alpha=0.6, label=f'Spectrum ({mode_label})')
         
-        # Plot Candidates
+        # Plot Candidates (Overlaid on the selected view)
+        # Note: Peak picking is usually done on Magnitude, so the Y-positions might need adjustment if viewing Real.
+        # But for visualization context, we can plot the marker at the Y-value of the CURRENT view.
+        
         df = self.current_results
         
         if df is not None:
@@ -403,11 +479,19 @@ class MainWindow(QMainWindow):
             signals = df_pos[df_pos['Verdict'] == True]
             noise = df_pos[df_pos['Verdict'] == False]
             
+            # Helper to get Y-coord from current plot data for specific indices
+            # Index in df maps to full spectrum, need to map to pos_mask if we used it...
+            # Actually easier: just use the index directly on plot_data, then filter out neg freqs
+            
+            def get_y_values(indices):
+                # indices are integers into the full array
+                return plot_data[indices.astype(int)]
+
             # Plot Green Signals
             if not signals.empty:
                 self.ax_spec.scatter(
                     signals['Freq_Hz'], 
-                    mag[signals['Index'].astype(int)], 
+                    get_y_values(signals['Index']), 
                     c='g', s=100, marker='o', alpha=0.8, edgecolors='k', 
                     label='Signal (Validated)', picker=5
                 )
@@ -416,7 +500,7 @@ class MainWindow(QMainWindow):
             if not noise.empty:
                 self.ax_spec.scatter(
                     noise['Freq_Hz'], 
-                    mag[noise['Index'].astype(int)], 
+                    get_y_values(noise['Index']), 
                     c='r', s=50, marker='x', alpha=0.6, 
                     label='Noise', picker=5
                 )
@@ -433,14 +517,19 @@ class MainWindow(QMainWindow):
         if len(pos_freqs) > 0:
             mask = (pos_freqs >= x_min) & (pos_freqs <= x_max)
             if np.any(mask):
-                y_visible = pos_mag[mask]
+                y_visible = pos_data[mask]
                 if len(y_visible) > 0:
                     y_max = np.max(y_visible)
-                    self.ax_spec.set_ylim(bottom=0, top=y_max * 1.1)
+                    y_min = np.min(y_visible)
+                    
+                    # Add some padding
+                    margin = (y_max - y_min) * 0.1
+                    if margin == 0: margin = 1
+                    self.ax_spec.set_ylim(bottom=y_min - margin, top=y_max + margin)
 
         self.ax_spec.set_title("Spectral Validation" + (" (Preview)" if df is None else " (Click points for details)"))
         self.ax_spec.set_xlabel("Frequency (Hz)")
-        self.ax_spec.set_ylabel("Amplitude")
+        self.ax_spec.set_ylabel(f"Amplitude ({mode_label})")
         self.ax_spec.legend(loc='upper right')
         self.fig_spec.tight_layout()
         self.canvas_spec.draw()

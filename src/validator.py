@@ -75,13 +75,28 @@ class SignalValidator:
             golden_spec = raw_spec
 
         # 3. Candidate Search
-        # Magnitude spectrum for picking
-        mag_spec = np.abs(golden_spec)
+        detect_mode = processing_params.get('detect_mode', 'mag')
+        print(f"Candidate Search Mode: {detect_mode}")
+
+        if detect_mode == 'real':
+            search_spec = np.real(golden_spec)
+        elif detect_mode == 'imag':
+            search_spec = np.imag(golden_spec)
+        else:
+            search_spec = np.abs(golden_spec)
+
+        # If "Show Absolute" is implied for detection too, we should probably take abs() 
+        # But usually for picking, we pick on positive peaks of the component unless user says otherwise.
+        # User said "image display add absolute value". 
+        # For picking: peaks are found on "height". If we view Real, we might have negative peaks?
+        # Usually we pick on Abs(Real).
+        search_spec = np.abs(search_spec)
+
         # Dynamic threshold: e.g., 3 * median_noise or relative to max
         # Simple relative threshold for now
-        height_thr = np.max(mag_spec) * detection_threshold
+        height_thr = np.max(search_spec) * detection_threshold
         
-        peaks, _ = find_peaks(mag_spec, height=height_thr, distance=10)
+        peaks, _ = find_peaks(search_spec, height=height_thr, distance=10)
         candidate_indices = peaks
         candidate_freqs = freqs[peaks]
         
@@ -97,14 +112,23 @@ class SignalValidator:
         for n, fid in self.loader.stream_process(checkpoints):
             # Process with LOCKED parameters
             _, spec = self.processor.process_fid(fid, processing_params, self.loader.sampling_rate)
-            mag = np.abs(spec)
             
+            if detect_mode == 'real':
+                iter_data = np.real(spec)
+            elif detect_mode == 'imag':
+                iter_data = np.imag(spec)
+            else:
+                iter_data = np.abs(spec)
+            
+            # Use abs for consistency in intensity measurement
+            iter_data = np.abs(iter_data)
+
             for idx in candidate_indices:
                 # Local Window Search Strategy (Anti-Drift)
                 # Search +/- peak_window points
                 start = max(0, idx - peak_window)
-                end = min(len(mag), idx + peak_window + 1)
-                window_slice = mag[start:end]
+                end = min(len(iter_data), idx + peak_window + 1)
+                window_slice = iter_data[start:end]
                 
                 # Metric: Max Intensity in Window
                 intensity = np.max(window_slice)
