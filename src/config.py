@@ -29,9 +29,11 @@ SCAN_FILE_PATTERN = "*.dat"
 # More points = smoother curve but slower processing
 CHECKPOINT_COUNT = 20
 
-# Candidate Search: How sensitive is the initial peak picking on the N_max spectrum?
-# Value is relative to the maximum peak height (0.1 = 10% of max)
-PEAK_DETECTION_THRESHOLD = 0.1
+# Candidate Search: Absolute Minimum Intensity Threshold
+# Peaks below this absolute value will be ignored
+DEFAULT_PEAK_HEIGHT = 1000.0
+DEFAULT_SEARCH_FREQ_MIN = 0.0
+DEFAULT_SEARCH_FREQ_MAX = 1000.0
 
 # Back-tracing: How many points +/- the center to search/integrate when extracting intensity
 # Larger window = more robust against frequency drift, but risk of overlapping peaks
@@ -45,7 +47,7 @@ DEFAULT_SLOPE_THRESHOLD = 0.1
 
 # --- 4. Processing Defaults ---
 # Default parameters for the signal processing pipeline
-DEFAULT_SAVGOL_WINDOW = 31
+DEFAULT_SAVGOL_WINDOW = 301 # Must be odd, reference uses 300~ but usually needs optimization
 DEFAULT_SAVGOL_ORDER = 2
 DEFAULT_APOD_T2STAR = 0.05  # Decay rate for exponential apodization
 DEFAULT_SVD_RANK = 5
@@ -59,13 +61,17 @@ UI_WINDOW_SIZE = (1200, 800)
 # Parameter Ranges for UI Sliders: (Min, Max, Step, Default)
 # Format: 'key': (min, max, step, default)
 UI_PARAM_RANGES = {
-    'savgol_window': (1, 101, 2, DEFAULT_SAVGOL_WINDOW),
-    'savgol_order': (1, 6, 1, DEFAULT_SAVGOL_ORDER),
+    'savgol_window': (3, 12000, 1, DEFAULT_SAVGOL_WINDOW), # Reference range 2-12000
+    'savgol_order': (1, 20, 1, DEFAULT_SAVGOL_ORDER), # Reference range 1-20
     'apod_t2star': (0.0001, 10.0, 0.001, DEFAULT_APOD_T2STAR),
     'phase_0': (-360, 360, 1, 0.0),
     'phase_1': (-50000, 50000, 100, 0.0), # Phase 1 (Linear Phase) usually needs large range for us/ms delays
     'trunc_start': (0, 3000, 1, 0), # Enhanced range matching reference
     'trunc_end': (0, 60000, 10, 0), # Reference range is 0-60000
+    'peak_height': (0.0, 10000000.0, 100.0, DEFAULT_PEAK_HEIGHT),
+    'search_freq_min': (0.0, 2000.0, 1.0, DEFAULT_SEARCH_FREQ_MIN),
+    'search_freq_max': (0.0, 2000.0, 1.0, DEFAULT_SEARCH_FREQ_MAX),
+    'peak_window': (1, 20, 1, PEAK_SEARCH_WINDOW),
     'min_r2': (0.0, 1.0, 0.01, DEFAULT_R2_THRESHOLD),
     'min_slope': (-0.5, 2.0, 0.1, DEFAULT_SLOPE_THRESHOLD)
 }

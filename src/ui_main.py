@@ -210,6 +210,25 @@ class MainWindow(QMainWindow):
         proc_group.setLayout(proc_layout)
         left_layout.addWidget(proc_group)
         
+        # 1.5 Peak Detection Settings
+        peak_group = QGroupBox("Peak Detection")
+        peak_layout = QVBoxLayout()
+        
+        self.peak_thr = SliderSpinBox("Min Abs Height", *self._unpack(r['peak_height']), is_float=True)
+        peak_layout.addWidget(self.peak_thr)
+
+        self.freq_min_search = SliderSpinBox("Search Freq Min (Hz)", *self._unpack(r['search_freq_min']), is_float=True)
+        peak_layout.addWidget(self.freq_min_search)
+
+        self.freq_max_search = SliderSpinBox("Search Freq Max (Hz)", *self._unpack(r['search_freq_max']), is_float=True)
+        peak_layout.addWidget(self.freq_max_search)
+        
+        self.peak_win = SliderSpinBox("Search Range (pts)", *self._unpack(r['peak_window']))
+        peak_layout.addWidget(self.peak_win)
+        
+        peak_group.setLayout(peak_layout)
+        left_layout.addWidget(peak_group)
+        
         # 2. Validation Thresholds
         val_group = QGroupBox("Decision Thresholds")
         val_layout = QVBoxLayout()
@@ -389,6 +408,10 @@ class MainWindow(QMainWindow):
             'trunc_end': int(self.trunc_end_slider.value()),
             'phase_mode': 'manual', 
             'enable_svd': self.chk_svd.isChecked(),
+            'peak_height_abs': float(self.peak_thr.value()),
+            'peak_window': int(self.peak_win.value()),
+            'search_freq_min': float(self.freq_min_search.value()),
+            'search_freq_max': float(self.freq_max_search.value()),
             'detect_mode': detect_mode # Pass to worker -> validator
         }
 

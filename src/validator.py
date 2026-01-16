@@ -3,8 +3,9 @@ from scipy.signal import find_peaks
 from scipy.stats import linregress
 import pandas as pd
 from src.config import (
-    CHECKPOINT_COUNT, PEAK_DETECTION_THRESHOLD, PEAK_SEARCH_WINDOW,
-    DEFAULT_R2_THRESHOLD, DEFAULT_SLOPE_THRESHOLD
+    CHECKPOINT_COUNT, DEFAULT_PEAK_HEIGHT, PEAK_SEARCH_WINDOW,
+    DEFAULT_R2_THRESHOLD, DEFAULT_SLOPE_THRESHOLD,
+    DEFAULT_SEARCH_FREQ_MIN, DEFAULT_SEARCH_FREQ_MAX
 )
 
 class SignalValidator:
@@ -18,19 +19,20 @@ class SignalValidator:
         self.evolution_data = {} # Stores traces for each candidate
         self.results = [] # Stores regression results
 
-    def run_validation(self, processing_params, checkpoints=None, detection_threshold=PEAK_DETECTION_THRESHOLD, peak_window=PEAK_SEARCH_WINDOW):
+    def run_validation(self, processing_params, checkpoints=None, detection_threshold=None, peak_window=None):
         """
         Main execution flow.
-        
-        Args:
-            processing_params (dict): Parameters for SVD, Apodization, etc.
-            checkpoints (list): List of N to check. If None, auto-generated.
-            detection_threshold (float): Relative threshold for picking candidates from N_max spectrum.
-            peak_window (int): Points +/- center to search/integrate for peak intensity.
-            
-        Returns:
-            pd.DataFrame: Summary of findings.
         """
+        # Resolve parameters (Priority: Arg > Param > Config Default)
+        if detection_threshold is None:
+            detection_threshold = processing_params.get('peak_height_abs', DEFAULT_PEAK_HEIGHT)
+            
+        if peak_window is None:
+            peak_window = processing_params.get('peak_window', PEAK_SEARCH_WINDOW)
+            peak_window = int(peak_window)
+
+        freq_min = processing_params.get('search_freq_min', DEFAULT_SEARCH_FREQ_MIN)
+        freq_max = processing_params.get('search_freq_max', DEFAULT_SEARCH_FREQ_MAX)
         
         # 1. Setup Checkpoints
         if checkpoints is None:
@@ -93,12 +95,17 @@ class SignalValidator:
         search_spec = np.abs(search_spec)
 
         # Dynamic threshold: e.g., 3 * median_noise or relative to max
-        # Simple relative threshold for now
-        height_thr = np.max(search_spec) * detection_threshold
+        # Absolute threshold from UI
+        height_thr = detection_threshold
         
         peaks, _ = find_peaks(search_spec, height=height_thr, distance=10)
-        candidate_indices = peaks
-        candidate_freqs = freqs[peaks]
+        
+        # Filter peaks by Frequency Range
+        peak_freqs = freqs[peaks]
+        mask = (peak_freqs >= freq_min) & (peak_freqs <= freq_max)
+        
+        candidate_indices = peaks[mask]
+        candidate_freqs = peak_freqs[mask]
         
         print(f"Found {len(candidate_indices)} candidates at: {candidate_freqs}")
         
@@ -136,7 +143,7 @@ class SignalValidator:
                 # Metric: Local Noise
                 # Look further away: e.g. idx +/- (20 to 50)
                 noise_window_start = max(0, idx - 50)
-                noise_window_end = min(len(mag), idx + 50)
+                noise_window_end = min(len(iter_data), idx + 50)
                 
                 # Exclude the peak region itself
                 mask = np.ones(noise_window_end - noise_window_start, dtype=bool)
@@ -146,7 +153,7 @@ class SignalValidator:
                 mask_end = min(len(mask), center_local + 10)
                 mask[mask_start:mask_end] = False
                 
-                noise_region = mag[noise_window_start:noise_window_end][mask]
+                noise_region = iter_data[noise_window_start:noise_window_end][mask]
                 
                 if len(noise_region) > 0:
                     noise_lvl = np.std(noise_region)

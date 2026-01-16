@@ -128,6 +128,8 @@ class ProgressiveLoader:
             # This is standard behavior for the reference hardware
             if len(int16_data) > 22:
                 np_data = np.array(int16_data[20:-2], dtype=np.float64) # Use float for processing
+                # Correct time axis direction (reverse reversed buffer)
+                np_data = np.flip(np_data)
             else:
                 return None
                 
