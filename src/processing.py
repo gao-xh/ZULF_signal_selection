@@ -74,25 +74,49 @@ class Processor:
             if window > 3 and window < len(data):
                  smooth = scipy.signal.savgol_filter(data.real, window, order, mode='mirror')
                  data = data - smooth
-        
-        # 2. SVD Denoising (Optional)
-        if params.get('enable_svd', False) and HAS_REF_LIB:
-            rank = int(params.get('svd_rank', 5))
-            # SVD is computationally expensive, usually done via Hankel matrix
-            # Using the reference library implementation
-            try:
-                data = svd_denoising(data, rank)
-            except Exception as e:
-                print(f"SVD Error: {e}")
 
-        # 3. Truncation
+        # 2. Truncation (Moved before SVD to improve performance)
         trunc_start = int(params.get('trunc_start', 0))
         trunc_end = int(params.get('trunc_end', 0))
         
         if trunc_start > 0:
-            data = data[trunc_start:]
+            # Check bounds
+            if trunc_start < len(data):
+                data = data[trunc_start:]
+            else:
+                data = np.array([]) # All cut
+                
         if trunc_end > 0:
-            data = data[:-trunc_end]
+            # Check bounds
+            if trunc_end < len(data):
+                data = data[:-trunc_end]
+            else:
+                # If trunc_end is very large, it might clear everything
+                # Logic: data[:-large] -> empty
+                data = np.array([])
+
+        if len(data) == 0:
+            # Early return if empty
+            return np.array([0]), np.array([0])
+        
+        # 3. SVD Denoising (Optional)
+        # SVD involves constructing a Hankel matrix which is N/2 x N/2. 
+        # For N=60000, this is 30000x30000, which requires ~7GB RAM (complex128 is 16 bytes/val -> 14GB!).
+        # We must limit the size or skip SVD to prevent crashes on standard machines.
+        MAX_SVD_POINTS = 10000 
+        
+        if params.get('enable_svd', False):
+            if len(data) > MAX_SVD_POINTS:
+                print(f"Warning: Data length ({len(data)}) exceeds SVD safe limit ({MAX_SVD_POINTS}). Skipping SVD to prevent memory crash.")
+            elif HAS_REF_LIB:
+                rank = int(params.get('svd_rank', 5))
+                try:
+                    data = svd_denoising(data, rank)
+                except Exception as e:
+                    print(f"SVD Error: {e}")
+            else:
+                 # Internal fallback loop could go here if implemented, but avoiding for now due to memory risk
+                 pass
             
         # 4. Apodization (Exponential Window)
         lb = params.get('apod_t2star', 0)
