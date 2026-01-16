@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
         
         # SVD Checkbox
         self.chk_svd = QCheckBox("Enable SVD Denoising")
-        self.chk_svd.setChecked(True)
+        self.chk_svd.setChecked(False)
         self.chk_svd.setToolTip("Enable Singular Value Decomposition (Slow but effective)")
         proc_layout.addWidget(self.chk_svd)
         self.chk_svd.stateChanged.connect(self.request_processing_update)
