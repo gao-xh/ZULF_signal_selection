@@ -149,10 +149,12 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.trunc_end_slider)
 
         # Fixed Phase
-        self.p0_slider = SliderSpinBox("Phase 0", *self._unpack(r['phase_0']), is_float=True)
-        # Manually fix step since config tuple has step
-        # Ah wait, SliderSpinBox signature is (label, min, max, val, step, is_float, decimals)
+        self.p0_slider = SliderSpinBox("Phase 0 (deg)", *self._unpack(r['phase_0']), is_float=True)
         proc_layout.addWidget(self.p0_slider)
+
+        self.p1_slider = SliderSpinBox("Phase 1 (deg)", *self._unpack(r['phase_1']), is_float=True)
+        # Manually set a smaller visual step if needed, but config step 100 is good for large p1
+        proc_layout.addWidget(self.p1_slider)
         
         proc_group.setLayout(proc_layout)
         left_layout.addWidget(proc_group)
@@ -314,6 +316,7 @@ class MainWindow(QMainWindow):
             'poly_order': int(self.savgol_order.value()),
             'apod_t2star': float(self.apod_rate.value()),
             'p0': float(self.p0_slider.value()),
+            'p1': float(self.p1_slider.value()),
             'trunc_start': int(self.trunc_slider.value()),
             'trunc_end': int(self.trunc_end_slider.value()),
             'phase_mode': 'manual', 

@@ -62,7 +62,8 @@ UI_PARAM_RANGES = {
     'savgol_window': (1, 101, 2, DEFAULT_SAVGOL_WINDOW),
     'savgol_order': (1, 6, 1, DEFAULT_SAVGOL_ORDER),
     'apod_t2star': (0.0001, 10.0, 0.001, DEFAULT_APOD_T2STAR),
-    'phase_0': (-180, 180, 1, 0.0),
+    'phase_0': (-360, 360, 1, 0.0),
+    'phase_1': (-50000, 50000, 100, 0.0), # Phase 1 (Linear Phase) usually needs large range for us/ms delays
     'trunc_start': (0, 3000, 1, 0), # Enhanced range matching reference
     'trunc_end': (0, 60000, 10, 0), # Reference range is 0-60000
     'min_r2': (0.0, 1.0, 0.01, DEFAULT_R2_THRESHOLD),
