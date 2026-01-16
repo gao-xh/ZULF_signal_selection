@@ -16,13 +16,14 @@ A specialized tool for Zero-to-Ultra-Low-Field (ZULF) NMR signal analysis. This 
 - **Apodization**: Exponential windowing ($T_2^*$) support.
 
 ### 3. Interactive UI
-- **Peak Detection Control**: Adjustable frequency range and absolute intensity thresholds.
-- **Visual Feedback**: Real-time plotting of Time Domain, Frequency Domain, and Signal Evolution (SNR fitting).
-- **Parameter Tuning**: Slider-based control for all processing parameters.
+- **Noise Estimation**: Switch between **Global Region** (fixed frequency band) or **Local Window** (around peak) for flexible SNR calculation.
+- **Visual Feedback**: Real-time plotting with overlay visualization of Search Ranges, Noise Regions, and Thresholds.
+- **Param Tuning**: Slider-based control with dynamic range adaptation.
 
 ## Recent Updates (2026-01-16)
 
 ### Core Logic Improvements
+- **Noise Calculation**: Added dual-mode noise estimation (Global/Local) to handle complex baselines.
 - **Corrected Time-Domain Loading**: Fixed data loading direction to align with reference implementation (`np.flip`).
 - **Peak Detection**:
     - Switched from relative percentage to **Absolute Intensity Threshold** for precise noise rejection.
