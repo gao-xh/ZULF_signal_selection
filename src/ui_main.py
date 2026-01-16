@@ -465,6 +465,23 @@ class MainWindow(QMainWindow):
 
         self.fig_time.tight_layout()
         self.canvas_time.draw()
+
+    def start_analysis(self):
+        if not self.folder_paths:
+            QMessageBox.warning(self, "No Data", "Please add at least one folder.")
+            return
+
+        params = self._get_process_params()
+        
+        self.btn_run.setEnabled(False)
+        self.btn_reprocess.setEnabled(False)
+        self.btn_load.setEnabled(False)
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        
+        self.worker = ValidationWorker(self.folder_paths, params)
+        self.worker.finished.connect(self.on_analysis_finished)
+        self.worker.error.connect(self.on_error)
+        self.worker.progress.connect(self.update_status)
         self.worker.start()
         
     def update_status(self, msg):
@@ -472,14 +489,16 @@ class MainWindow(QMainWindow):
         
     def on_error(self, msg):
         self.btn_run.setEnabled(True)
-        self.btn_preview.setEnabled(True)
+        self.btn_reprocess.setEnabled(True)
+        self.btn_load.setEnabled(True)
         self.progress_bar.setRange(0, 100)
         self.statusBar().showMessage("Error")
         QMessageBox.critical(self, "Analysis Failed", msg)
         
     def on_analysis_finished(self, results, freqs, spec, evo_data):
         self.btn_run.setEnabled(True)
-        self.btn_preview.setEnabled(True)
+        self.btn_reprocess.setEnabled(True)
+        self.btn_load.setEnabled(True)
         self.progress_bar.setRange(0, 100)
         self.statusBar().showMessage("Analysis Complete")
         
