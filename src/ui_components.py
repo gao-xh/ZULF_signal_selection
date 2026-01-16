@@ -66,3 +66,14 @@ class SliderSpinBox(QWidget):
 
     def value(self):
         return self.spinbox.value()
+        
+    def set_range(self, min_val, max_val):
+        """Update range for both slider and spinbox dynamically."""
+        self.spinbox.blockSignals(True)
+        self.slider.blockSignals(True)
+        
+        self.spinbox.setRange(min_val, max_val)
+        self.slider.setRange(int(min_val * self.scale_factor), int(max_val * self.scale_factor))
+        
+        self.spinbox.blockSignals(False)
+        self.slider.blockSignals(False)

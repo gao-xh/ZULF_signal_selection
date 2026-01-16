@@ -10,11 +10,14 @@
 - **UI Freeze**: Moved heavy I/O and processing to background threads (`LoaderWorker`, `ProcessWorker`).
 
 ### Added
+- **Noise Estimation**: Implemented selectable noise calculation methods (Global Region vs Local Window) to handle different baseline conditions.
+- **Visualization**: Added real-time visual feedback (overlay lines and regions) on the spectrum plot for Search Range, Noise Region, and Amplitude Thresholds.
 - **Peak Detection Controls**: Added UI sliders for "Min Abs Height", "Search Freq Min", and "Search Freq Max".
 - **Time Domain Plot**: Added a dedicated Time Domain plot in the top-right panel for better pre-processing visualization.
 - **Config**: Added new configuration constants for peak detection defaults.
 
 ### Changed
+- **UI UX**: Implemented dynamic range limits for sliders based on loaded data dimensions (max frequency, max amplitude).
 - **Workflow**: Separated "Load Data", "Refresh Processing", and "Run Analysis" into distinct steps with clearer button labels.
 - **Peak Thresholding**: Changed peak detection loop to use absolute amplitude thresholds instead of relative percentage.
 - **Dependencies**: Updated usage of `scipy.signal` and `find_peaks` to robustly handle empty results.

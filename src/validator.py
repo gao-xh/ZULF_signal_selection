@@ -5,7 +5,9 @@ import pandas as pd
 from src.config import (
     CHECKPOINT_COUNT, DEFAULT_PEAK_HEIGHT, PEAK_SEARCH_WINDOW,
     DEFAULT_R2_THRESHOLD, DEFAULT_SLOPE_THRESHOLD,
-    DEFAULT_SEARCH_FREQ_MIN, DEFAULT_SEARCH_FREQ_MAX
+    DEFAULT_SEARCH_FREQ_MIN, DEFAULT_SEARCH_FREQ_MAX,
+    DEFAULT_NOISE_FREQ_MIN, DEFAULT_NOISE_FREQ_MAX,
+    DEFAULT_NOISE_METHOD, DEFAULT_LOCAL_NOISE_WINDOW
 )
 
 class SignalValidator:
@@ -33,6 +35,11 @@ class SignalValidator:
 
         freq_min = processing_params.get('search_freq_min', DEFAULT_SEARCH_FREQ_MIN)
         freq_max = processing_params.get('search_freq_max', DEFAULT_SEARCH_FREQ_MAX)
+        
+        noise_method = processing_params.get('noise_method', DEFAULT_NOISE_METHOD)
+        noise_f_min = processing_params.get('noise_freq_min', DEFAULT_NOISE_FREQ_MIN)
+        noise_f_max = processing_params.get('noise_freq_max', DEFAULT_NOISE_FREQ_MAX)
+        noise_local_win = processing_params.get('local_noise_window', DEFAULT_LOCAL_NOISE_WINDOW)
         
         # 1. Setup Checkpoints
         if checkpoints is None:
@@ -130,6 +137,19 @@ class SignalValidator:
             # Use abs for consistency in intensity measurement
             iter_data = np.abs(iter_data)
 
+            # --- Noise Calculation Strategy ---
+            global_noise_lvl = 1.0
+            
+            if noise_method == 'global':
+                # Global Region Strategy
+                noise_mask_full = (freqs >= noise_f_min) & (freqs <= noise_f_max)
+                noise_region_data = iter_data[noise_mask_full]
+                
+                if len(noise_region_data) > 0:
+                    global_noise_lvl = np.std(noise_region_data)
+                else:
+                    global_noise_lvl = 1.0 
+
             for idx in candidate_indices:
                 # Local Window Search Strategy (Anti-Drift)
                 # Search +/- peak_window points
@@ -140,25 +160,31 @@ class SignalValidator:
                 # Metric: Max Intensity in Window
                 intensity = np.max(window_slice)
                 
-                # Metric: Local Noise
-                # Look further away: e.g. idx +/- (20 to 50)
-                noise_window_start = max(0, idx - 50)
-                noise_window_end = min(len(iter_data), idx + 50)
-                
-                # Exclude the peak region itself
-                mask = np.ones(noise_window_end - noise_window_start, dtype=bool)
-                # Mask out center 20 points
-                center_local = idx - noise_window_start
-                mask_start = max(0, center_local - 10)
-                mask_end = min(len(mask), center_local + 10)
-                mask[mask_start:mask_end] = False
-                
-                noise_region = iter_data[noise_window_start:noise_window_end][mask]
-                
-                if len(noise_region) > 0:
-                    noise_lvl = np.std(noise_region)
+                # Determine Noise Level for this peak
+                if noise_method == 'global':
+                    noise_lvl = global_noise_lvl
                 else:
-                    noise_lvl = 1.0 # Safe fallback
+                    # Local Window Strategy
+                    # Use user-defined local window size
+                    noise_w = int(noise_local_win)
+                    
+                    noise_window_start = max(0, idx - noise_w)
+                    noise_window_end = min(len(iter_data), idx + noise_w)
+                    
+                    # Exclude the peak region itself
+                    mask = np.ones(noise_window_end - noise_window_start, dtype=bool)
+                    # Mask out center (peak_window * 2) 
+                    center_local = idx - noise_window_start
+                    mask_start = max(0, center_local - peak_window*2)
+                    mask_end = min(len(mask), center_local + peak_window*2)
+                    mask[mask_start:mask_end] = False
+                    
+                    noise_region = iter_data[noise_window_start:noise_window_end][mask]
+                    
+                    if len(noise_region) > 0:
+                        noise_lvl = np.std(noise_region)
+                    else:
+                        noise_lvl = 1.0 
                     
                 snr = intensity / noise_lvl if noise_lvl > 0 else 0
                 

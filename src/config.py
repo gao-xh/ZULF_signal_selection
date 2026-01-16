@@ -35,6 +35,12 @@ DEFAULT_PEAK_HEIGHT = 1000.0
 DEFAULT_SEARCH_FREQ_MIN = 0.0
 DEFAULT_SEARCH_FREQ_MAX = 1000.0
 
+# Noise Calculation: Frequency range to use for noise estimation
+DEFAULT_NOISE_FREQ_MIN = 300.0
+DEFAULT_NOISE_FREQ_MAX = 400.0
+DEFAULT_NOISE_METHOD = 'global' # 'global' or 'local'
+DEFAULT_LOCAL_NOISE_WINDOW = 200 # +/- points around peak
+
 # Back-tracing: How many points +/- the center to search/integrate when extracting intensity
 # Larger window = more robust against frequency drift, but risk of overlapping peaks
 PEAK_SEARCH_WINDOW = 5
@@ -73,5 +79,8 @@ UI_PARAM_RANGES = {
     'search_freq_max': (0.0, 2000.0, 1.0, DEFAULT_SEARCH_FREQ_MAX),
     'peak_window': (1, 20, 1, PEAK_SEARCH_WINDOW),
     'min_r2': (0.0, 1.0, 0.01, DEFAULT_R2_THRESHOLD),
+    'noise_freq_min': (0.0, 2000.0, 1.0, DEFAULT_NOISE_FREQ_MIN),
+    'noise_freq_max': (0.0, 2000.0, 1.0, DEFAULT_NOISE_FREQ_MAX),
+    'local_noise_window': (10, 1000, 10, DEFAULT_LOCAL_NOISE_WINDOW),
     'min_slope': (-0.5, 2.0, 0.1, DEFAULT_SLOPE_THRESHOLD)
 }

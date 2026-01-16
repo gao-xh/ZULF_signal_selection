@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
     QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
-    QCheckBox
+    QCheckBox, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 
@@ -216,16 +216,55 @@ class MainWindow(QMainWindow):
         
         self.peak_thr = SliderSpinBox("Min Abs Height", *self._unpack(r['peak_height']), is_float=True)
         peak_layout.addWidget(self.peak_thr)
+        self.peak_thr.valueChanged.connect(self.plot_spectrum_traffic_light)
 
         self.freq_min_search = SliderSpinBox("Search Freq Min (Hz)", *self._unpack(r['search_freq_min']), is_float=True)
         peak_layout.addWidget(self.freq_min_search)
+        self.freq_min_search.valueChanged.connect(self.plot_spectrum_traffic_light)
 
         self.freq_max_search = SliderSpinBox("Search Freq Max (Hz)", *self._unpack(r['search_freq_max']), is_float=True)
         peak_layout.addWidget(self.freq_max_search)
+        self.freq_max_search.valueChanged.connect(self.plot_spectrum_traffic_light)
         
         self.peak_win = SliderSpinBox("Search Range (pts)", *self._unpack(r['peak_window']))
         peak_layout.addWidget(self.peak_win)
+
+        # Noise Method
+        noise_method_layout = QHBoxLayout()
+        noise_method_layout.addWidget(QLabel("Noise Method:"))
         
+        self.combo_noise_method = QComboBox()
+        self.combo_noise_method.addItems(["Global Region", "Local Window"])
+        self.combo_noise_method.currentTextChanged.connect(self.update_noise_ui_visibility)
+        noise_method_layout.addWidget(self.combo_noise_method)
+        peak_layout.addLayout(noise_method_layout)
+
+        # Global Region Controls
+        self.noise_global_group = QWidget()
+        n_glob_l = QVBoxLayout(self.noise_global_group)
+        n_glob_l.setContentsMargins(0,0,0,0)
+        
+        self.noise_min = SliderSpinBox("Noise Freq Min (Hz)", *self._unpack(r['noise_freq_min']), is_float=True)
+        self.noise_min.valueChanged.connect(self.plot_spectrum_traffic_light)
+        n_glob_l.addWidget(self.noise_min)
+
+        self.noise_max = SliderSpinBox("Noise Freq Max (Hz)", *self._unpack(r['noise_freq_max']), is_float=True)
+        self.noise_max.valueChanged.connect(self.plot_spectrum_traffic_light)
+        n_glob_l.addWidget(self.noise_max)
+        
+        peak_layout.addWidget(self.noise_global_group)
+
+        # Local Window Controls
+        self.noise_local_group = QWidget()
+        n_loc_l = QVBoxLayout(self.noise_local_group)
+        n_loc_l.setContentsMargins(0,0,0,0)
+        
+        self.noise_local_win = SliderSpinBox("Local Window (pts)", *self._unpack(r['local_noise_window']))
+        n_loc_l.addWidget(self.noise_local_win)
+        
+        peak_layout.addWidget(self.noise_local_group)
+        self.noise_local_group.setVisible(False)
+
         peak_group.setLayout(peak_layout)
         left_layout.addWidget(peak_group)
         
@@ -412,6 +451,10 @@ class MainWindow(QMainWindow):
             'peak_window': int(self.peak_win.value()),
             'search_freq_min': float(self.freq_min_search.value()),
             'search_freq_max': float(self.freq_max_search.value()),
+            'noise_freq_min': float(self.noise_min.value()),
+            'noise_freq_max': float(self.noise_max.value()),
+            'noise_method': 'global' if self.combo_noise_method.currentText() == "Global Region" else 'local',
+            'local_noise_window': int(self.noise_local_win.value()),
             'detect_mode': detect_mode # Pass to worker -> validator
         }
 
@@ -464,6 +507,25 @@ class MainWindow(QMainWindow):
         self.current_spec = spec
         self.current_processed_time = time_data
         
+        # update dynamic ranges
+        try:
+             # Amplitude
+             max_amp = np.max(np.abs(spec))
+             # If current max range is significantly smaller than actual max, update it
+             # Use 1.2x headroom
+             self.peak_thr.set_range(0, max_amp * 1.5)
+             
+             # Frequency
+             max_freq = np.max(freqs)
+             if max_freq > 0:
+                 self.freq_min_search.set_range(0, max_freq)
+                 self.freq_max_search.set_range(0, max_freq)
+                 self.noise_min.set_range(0, max_freq)
+                 self.noise_max.set_range(0, max_freq)
+
+        except Exception as e:
+            print(f"Error updating dynamic ranges: {e}")
+
         self.btn_run.setEnabled(True)
         self.statusBar().showMessage("Processing Complete.")
         
@@ -552,6 +614,12 @@ class MainWindow(QMainWindow):
         self.current_results['Verdict'] = self.current_results.apply(judge, axis=1)
         self.plot_spectrum_traffic_light()
         
+    def update_noise_ui_visibility(self, method):
+        is_global = (method == "Global Region")
+        self.noise_global_group.setVisible(is_global)
+        self.noise_local_group.setVisible(not is_global)
+        self.plot_spectrum_traffic_light()
+
     def update_view_mode(self):
         sender = self.sender()
         if not sender: return
@@ -602,6 +670,34 @@ class MainWindow(QMainWindow):
         
         self.ax_spec.plot(pos_freqs, pos_data, 'k-', linewidth=0.8, alpha=0.6, label=f'Spectrum ({mode_label})')
         
+        # --- Visualization of Detection Params ---
+        # 1. Amplitude Threshold
+        thr_val = self.peak_thr.value()
+        self.ax_spec.axhline(y=thr_val, color='#FFA500', linestyle='--', linewidth=1, alpha=0.7, label='Height Threshold')
+        
+        # 2. Search Window
+        f_min = self.freq_min_search.value()
+        f_max = self.freq_max_search.value()
+        
+        # Highlight the VALID search region (or grey out the ignored)
+        # Greying out outside is clearer
+        # Left side
+        self.ax_spec.axvspan(0, f_min, color='gray', alpha=0.1)
+        # Right side
+        self.ax_spec.axvspan(f_max, np.max(pos_freqs) if len(pos_freqs)>0 else 1000, color='gray', alpha=0.1, label='Ignored Region')
+        
+        # Add vertical lines for bounds
+        self.ax_spec.axvline(x=f_min, color='gray', linestyle=':', alpha=0.5)
+        self.ax_spec.axvline(x=f_max, color='gray', linestyle=':', alpha=0.5)
+
+        # 3. Noise Region
+        if self.combo_noise_method.currentText() == "Global Region":
+            n_min = self.noise_min.value()
+            n_max = self.noise_max.value()
+            # Red semi-transparent area for noise
+            self.ax_spec.axvspan(n_min, n_max, color='red', alpha=0.05, label='Noise Calc Region')
+            self.ax_spec.text((n_min+n_max)/2, thr_val*1.1, "Noise", color='red', fontsize=8, ha='center')
+
         # Plot Candidates (Overlaid on the selected view)
         # Note: Peak picking is usually done on Magnitude, so the Y-positions might need adjustment if viewing Real.
         # But for visualization context, we can plot the marker at the Y-value of the CURRENT view.
