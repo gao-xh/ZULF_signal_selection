@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
     QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
-    QCheckBox, QComboBox
+    QCheckBox, QComboBox, QScrollArea
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 
@@ -135,12 +135,24 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # --- Left Panel: Controls ---
+        # Main Splitter: Left (Controls) | Right (Plots)
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(self.main_splitter)
+        
+        # --- Left Panel: Controls (Scrollable) ---
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QScrollArea.NoFrame)
+        left_scroll.setMinimumWidth(330) # Slightly wider default
+        
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_panel.setFixedWidth(300)
+        
+        left_scroll.setWidget(left_panel)
+        self.main_splitter.addWidget(left_scroll)
         
         # 0. Data Selection
         folder_group = QGroupBox("Data Selection")
@@ -309,7 +321,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.progress_bar)
         
         left_layout.addStretch()
-        main_layout.addWidget(left_panel)
+        # main_layout.addWidget(left_panel) # Handled by Splitter/ScrollArea
         
         # --- Right Panel: Visualization ---
         right_splitter = QSplitter(Qt.Vertical)
@@ -411,7 +423,11 @@ class MainWindow(QMainWindow):
         evo_layout.addWidget(self.canvas_evo)
         right_splitter.addWidget(evo_container)
         
-        main_layout.addWidget(right_splitter)
+        self.main_splitter.addWidget(right_splitter)
+        
+        # Splitter config
+        self.main_splitter.setStretchFactor(0, 0) # Left panel fixed-ish
+        self.main_splitter.setStretchFactor(1, 1) # Right panel expands
 
     def add_folders(self):
         # We allow multiple dirs. Qt QFileDialog.getExistingDirectory only does one.
