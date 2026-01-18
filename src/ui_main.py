@@ -67,6 +67,116 @@ class ValidationWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+class RelaxationWorker(QThread):
+    finished = Signal(object, object, object, object, float, float) # times, amps, fit_x, fit_y, t2, r2
+    error = Signal(str)
+
+    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0):
+        super().__init__()
+        self.data = full_data
+        self.target_freq = target_freq
+        self.fs = sampling_rate
+        self.params = params
+        self.t_start = t_start
+        self.t_end = t_end
+
+    def run(self):
+        try:
+            from scipy.stats import linregress
+            import scipy.fft
+            
+            # Setup sweep parameters
+            N = len(self.data)
+            
+            # Use user provided range if valid, else defaults
+            if self.t_end > self.t_start:
+                start_p = int(self.t_start * self.fs)
+                end_p = int(self.t_end * self.fs)
+            else:
+                # Fallback to logic: 0 to 60%
+                start_p = 0
+                end_p = int(N * 0.6) 
+
+            # Validation
+            if start_p < 0: start_p = 0
+            if end_p >= N: end_p = N - 1
+            if end_p <= start_p: 
+                end_p = start_p + 100 # Minimum fallback
+            
+            # Determine Step size for ~50 points resolution
+            span = end_p - start_p
+            step = max(1, span // 50)
+            
+            trunc_points = range(start_p, end_p, step)
+            
+            times = []
+            amps = []
+            
+            # Pre-calculate window for peak search
+            full_freqs = scipy.fft.fftfreq(N, d=1.0/self.fs)
+            target_idx = np.argmin(np.abs(full_freqs - self.target_freq))
+            search_r = 5 
+            
+            for start_iter in trunc_points:
+                # 1. Slice
+                segment = self.data[start_iter:]
+                
+                # 2. Pad
+                padded = np.zeros(N, dtype=self.data.dtype)
+                padded[:len(segment)] = segment
+                
+                # 3. FFT
+                spec = scipy.fft.fft(padded)
+                spec_mag = np.abs(spec)
+                
+                # 4. Measure
+                idx_start = max(0, target_idx - search_r)
+                idx_end = min(N, target_idx + search_r + 1)
+                
+                if idx_end > idx_start:
+                    peak_amp = np.max(spec_mag[idx_start:idx_end])
+                else:
+                    peak_amp = 0
+                
+                times.append(start_iter / self.fs)
+                amps.append(peak_amp)
+                
+            times = np.array(times)
+            amps = np.array(amps)
+            
+            # 5. Fit T2*
+            valid = amps > 0
+            if np.sum(valid) > 2:
+                x_fit = times[valid]
+                y_fit_log = np.log(amps[valid])
+                
+                slope, intercept, r_val, _, _ = linregress(x_fit, y_fit_log)
+                
+                if slope < 0:
+                    t2 = -1.0 / slope
+                else:
+                    t2 = 0 
+                
+                r2 = r_val**2
+                
+                if r2 > 0:
+                     fit_x = np.linspace(min(x_fit), max(x_fit), 50)
+                     fit_y = np.exp(intercept + slope * fit_x)
+                else:
+                     fit_x = []
+                     fit_y = []
+            else:
+                fit_x = []
+                fit_y = []
+                t2 = 0
+                r2 = 0
+                
+            self.finished.emit(times, amps, fit_x, fit_y, t2, r2)
+            
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class ProcessWorker(QThread):
     finished = Signal(object, object, object) # freqs, spec, time_data
     error = Signal(str)
@@ -340,6 +450,8 @@ class MainWindow(QMainWindow):
         
         # Top: Spectrum View
         self.fig_spec = Figure(figsize=(8, 4))
+        # Use subplots_adjust to set safe margins initially, avoiding tight_layout instability
+        self.fig_spec.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.15)
         self.canvas_spec = FigureCanvas(self.fig_spec)
         self.ax_spec = self.fig_spec.add_subplot(111)
         # Enable picking
@@ -419,7 +531,45 @@ class MainWindow(QMainWindow):
         
         evo_container = QWidget()
         evo_layout = QVBoxLayout(evo_container)
-        evo_layout.addWidget(QLabel("Peak Evolution Analysis (Click a point above)"))
+        
+        # Analysis Mode Selection
+        self.lbl_analysis_mode = QLabel("Analysis Mode:")
+        self.combo_analysis_mode = QComboBox()
+        self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Relaxation Analysis (Amp vs t)"])
+        self.combo_analysis_mode.currentIndexChanged.connect(self.on_analysis_mode_changed)
+        
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.lbl_analysis_mode)
+        mode_layout.addWidget(self.combo_analysis_mode)
+        mode_layout.addStretch()
+        
+        evo_layout.addLayout(mode_layout)
+
+        # Relaxation Settings Group (Hidden by default)
+        self.relax_settings_widget = QWidget()
+        relax_layout = QHBoxLayout(self.relax_settings_widget)
+        relax_layout.setContentsMargins(0,0,0,0)
+        
+        relax_layout.addWidget(QLabel("Sweep Start (ms):"))
+        self.spin_relax_start = QDoubleSpinBox()
+        self.spin_relax_start.setRange(0, 10000) # 0 to 10s
+        self.spin_relax_start.setValue(0)
+        self.spin_relax_start.setSingleStep(10)
+        relax_layout.addWidget(self.spin_relax_start)
+        
+        relax_layout.addWidget(QLabel("End (ms):"))
+        self.spin_relax_end = QDoubleSpinBox()
+        self.spin_relax_end.setRange(0, 10000)
+        self.spin_relax_end.setValue(500) # Default 500ms
+        self.spin_relax_end.setSingleStep(10)
+        relax_layout.addWidget(self.spin_relax_end)
+        
+        relax_layout.addStretch()
+        
+        evo_layout.addWidget(self.relax_settings_widget)
+        self.relax_settings_widget.setVisible(False)
+
+        evo_layout.addWidget(QLabel("Click a signal peak in the spectrum above to analyze."))
         evo_layout.addWidget(self.canvas_evo)
         right_splitter.addWidget(evo_container)
         
@@ -477,6 +627,16 @@ class MainWindow(QMainWindow):
     def request_processing_update(self):
         if self.raw_avg_data is not None:
             self.update_timer.start()
+
+    def on_analysis_mode_changed(self, index):
+        # Clear current plot to hint change
+        self.ax_evo.clear()
+        self.ax_evo.text(0.5, 0.5, "Click a peak to analyze", ha='center', va='center')
+        self.canvas_evo.draw()
+        
+        is_relax = self.combo_analysis_mode.currentText().startswith("Relaxation")
+        if hasattr(self, 'relax_settings_widget'):
+            self.relax_settings_widget.setVisible(is_relax)
 
     def run_loading(self):
         if not self.folder_paths:
@@ -628,13 +788,13 @@ class MainWindow(QMainWindow):
             return (row['R2'] >= r2_thr) and (row['Slope'] >= slope_thr)
             
         self.current_results['Verdict'] = self.current_results.apply(judge, axis=1)
-        self.plot_spectrum_traffic_light()
+        self.plot_spectrum_traffic_light(preserve_view=True)
         
     def update_noise_ui_visibility(self, method):
         is_global = (method == "Global Region")
         self.noise_global_group.setVisible(is_global)
         self.noise_local_group.setVisible(not is_global)
-        self.plot_spectrum_traffic_light()
+        self.plot_spectrum_traffic_light(preserve_view=True)
 
     def update_view_mode(self):
         sender = self.sender()
@@ -646,9 +806,12 @@ class MainWindow(QMainWindow):
                 btn.setChecked(False)
         sender.setChecked(True)
         
-        self.plot_spectrum_traffic_light()
+        self.plot_spectrum_traffic_light() # Changing mode (Real/Imag) naturally requires re-scale
 
-    def plot_spectrum_traffic_light(self):
+    def plot_spectrum_traffic_light(self, preserve_view=False):
+        # Capture current Y-lim before clearing if preserving view
+        current_ylim = self.ax_spec.get_ylim() if preserve_view else None
+        
         self.ax_spec.clear()
         
         if self.current_freqs is None or self.current_spec is None:
@@ -756,30 +919,34 @@ class MainWindow(QMainWindow):
         # Adjust X-Axis to show only positive part or user selected range
         x_min = self.freq_min.value()
         x_max = self.freq_max.value()
-        
-        # If default 0-100 is untouched and data goes further, maybe auto-scale?
-        # But user wants control. Let's respect the spinboxes.
         self.ax_spec.set_xlim(left=x_min, right=x_max)
         
-        # Auto-scale Y based on visible X range
-        if len(pos_freqs) > 0:
-            mask = (pos_freqs >= x_min) & (pos_freqs <= x_max)
-            if np.any(mask):
-                y_visible = pos_data[mask]
-                if len(y_visible) > 0:
-                    y_max = np.max(y_visible)
-                    y_min = np.min(y_visible)
-                    
-                    # Add some padding
-                    margin = (y_max - y_min) * 0.1
-                    if margin == 0: margin = 1
-                    self.ax_spec.set_ylim(bottom=y_min - margin, top=y_max + margin)
+        # Restore Y-Limits if requested, otherwise Auto-scale
+        if preserve_view and current_ylim is not None:
+            self.ax_spec.set_ylim(current_ylim)
+        else:
+            # Auto-scale Y based on visible X range
+            if len(pos_freqs) > 0:
+                mask = (pos_freqs >= x_min) & (pos_freqs <= x_max)
+                if np.any(mask):
+                    y_visible = pos_data[mask]
+                    if len(y_visible) > 0:
+                        y_max = np.max(y_visible)
+                        y_min = np.min(y_visible)
+                        
+                        # Add some padding
+                        margin = (y_max - y_min) * 0.1
+                        if margin == 0: margin = 1
+                        self.ax_spec.set_ylim(bottom=y_min - margin, top=y_max + margin)
 
         self.ax_spec.set_title("Spectral Validation" + (" (Preview)" if df is None else " (Click points for details)"))
         self.ax_spec.set_xlabel("Frequency (Hz)")
         self.ax_spec.set_ylabel(f"Amplitude ({mode_label})")
         self.ax_spec.legend(loc='upper right')
-        self.fig_spec.tight_layout()
+        
+        # NOTE: Do NOT call tight_layout here repeatedly. 
+        # It causes figure height jitter/collapse when updating frequently.
+        # self.fig_spec.tight_layout() 
         self.canvas_spec.draw()
         
     def on_pick(self, event):
@@ -799,7 +966,63 @@ class MainWindow(QMainWindow):
         
         # If reasonably close (e.g. 1Hz)
         if closest_row['dist'] < 5.0:
-            self.plot_evolution(closest_row['Index'])
+            if self.combo_analysis_mode.currentText().startswith("Relaxation"):
+                self.run_relaxation_analysis(closest_row['Freq_Hz'])
+            else:
+                self.plot_evolution(closest_row['Index'])
+
+    def run_relaxation_analysis(self, target_freq):
+        if self.raw_avg_data is None:
+            return
+            
+        self.ax_evo.clear()
+        self.ax_evo.text(0.5, 0.5, "Calculating Relaxation...", ha='center', va='center')
+        self.canvas_evo.draw()
+        
+        params = self._get_process_params()
+        # Use RAW average data for this analysis to be accurate
+        # (Assuming raw_avg_data is the time domain signal)
+        
+        sampling_rate = self.loader_worker.sampling_rate if hasattr(self, 'loader_worker') else 1000.0
+        
+        # Get Time Range from UI
+        t_start = self.spin_relax_start.value() / 1000.0
+        t_end = self.spin_relax_end.value() / 1000.0
+        
+        self.relax_worker = RelaxationWorker(
+            self.raw_avg_data, 
+            target_freq, 
+            sampling_rate,
+            params,
+            t_start=t_start,
+            t_end=t_end
+        )
+        # Need sampling rate. self.loader_worker might be gone or recycled.
+        # But we stored sampling_rate in on_loading_finished?
+        # Let's check on_loading_finished
+        
+        self.relax_worker.finished.connect(self.plot_relaxation_results)
+        self.relax_worker.error.connect(lambda e: QMessageBox.warning(self, "Analysis Error", e))
+        self.relax_worker.start()
+
+    def plot_relaxation_results(self, times, amps, fit_x, fit_y, t2, r2):
+        self.ax_evo.clear()
+        
+        # Plot Data
+        self.ax_evo.scatter(times, amps, c='b', alpha=0.6, label='Truncation Amp')
+        
+        # Plot Fit
+        if len(fit_x) > 0:
+            self.ax_evo.plot(fit_x, fit_y, 'r-', linewidth=2, label=f'Fit: T2*={t2*1000:.1f}ms')
+            
+        self.ax_evo.set_xlabel("Truncation Start Time (s)")
+        self.ax_evo.set_ylabel("Peak Amplitude")
+        self.ax_evo.set_title(f"Relaxation Analysis (R2={r2:.3f})")
+        self.ax_evo.legend()
+        self.ax_evo.grid(True, linestyle='--', alpha=0.5)
+        
+        self.fig_evo.tight_layout()
+        self.canvas_evo.draw()
 
     def plot_evolution(self, idx):
         self.ax_evo.clear()
