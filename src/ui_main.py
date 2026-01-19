@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
     QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
-    QCheckBox, QComboBox, QScrollArea
+    QCheckBox, QComboBox, QScrollArea, QSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 
@@ -69,9 +69,10 @@ class ValidationWorker(QThread):
 
 class RelaxationWorker(QThread):
     finished = Signal(object, object, object, object, float, float) # times, amps, fit_x, fit_y, t2, r2
+    progress = Signal(str, int) # message, percent
     error = Signal(str)
 
-    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0):
+    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0, points=50):
         super().__init__()
         self.data = full_data
         self.target_freq = target_freq
@@ -79,6 +80,7 @@ class RelaxationWorker(QThread):
         self.params = params
         self.t_start = t_start
         self.t_end = t_end
+        self.points = points
 
     def run(self):
         try:
@@ -103,9 +105,9 @@ class RelaxationWorker(QThread):
             if end_p <= start_p: 
                 end_p = start_p + 100 # Minimum fallback
             
-            # Determine Step size for ~50 points resolution
+            # Determine Step size 
             span = end_p - start_p
-            step = max(1, span // 50)
+            step = max(1, span // self.points)
             
             trunc_points = range(start_p, end_p, step)
             
@@ -117,15 +119,65 @@ class RelaxationWorker(QThread):
             target_idx = np.argmin(np.abs(full_freqs - self.target_freq))
             search_r = 5 
             
-            for start_iter in trunc_points:
-                # 1. Slice
-                segment = self.data[start_iter:]
+            # Helper to apply processing on segment
+            def apply_segment_processing(segment_data):
+                # 1. Savgol (Baseline)
+                if self.params.get('conv_points', 0) > 0:
+                    window = int(self.params['conv_points'])
+                    order = int(self.params['poly_order'])
+                    if window % 2 == 0: window += 1
+                    if window > 3 and window < len(segment_data):
+                        smooth = scipy.signal.savgol_filter(segment_data.real, window, order, mode='mirror')
+                        segment_data = segment_data - smooth
                 
-                # 2. Pad
-                padded = np.zeros(N, dtype=self.data.dtype)
-                padded[:len(segment)] = segment
+                # 2. Apodization
+                # Note: Apodization usually starts from t=0. 
+                # Here t=0 corresponds to trunc_start relative to original signal.
+                # If we want to clean up the 'new' signal, we apodize from its start.
+                t2_apod = self.params.get('apod_t2star', 0)
+                if t2_apod > 0:
+                     t_axis = np.linspace(0, len(segment_data)/self.fs, len(segment_data), endpoint=False)
+                     window_func = np.exp(-t_axis / t2_apod)
+                     segment_data = segment_data * window_func
+                     
+                return segment_data
+
+            # Optimization: Pre-allocate buffer for FFT to avoid reallocation in loop
+            # Use complex128 if input is complex, else float
+            dtype = self.data.dtype if np.iscomplexobj(self.data) else np.complex128
+            padded = np.zeros(N, dtype=dtype)
+            
+            total_steps = len(trunc_points)
+            for i, start_iter in enumerate(trunc_points):
+                # Report Progress
+                if i % 5 == 0:
+                    pcl = int((i / total_steps) * 100)
+                    self.progress.emit(f"Analyzing Relaxation Step {i}/{total_steps}...", pcl)
+
+                # 1. Slice (View)
+                # segment = self.data[start_iter:] 
+                
+                # 2. Update Buffer (Minimal copy)
+                # We need to construct [segment, 0, 0, ...]
+                # Length of segment is N - start_iter
+                current_len = N - start_iter
+                
+                # Extract segment
+                raw_segment = self.data[start_iter:]
+                
+                # Apply Processing (Baseline, Appodization)
+                processed_segment = apply_segment_processing(raw_segment)
+                
+                # Copy processed data to buffer
+                padded[:current_len] = processed_segment
+                
+                # Zero out the rest 
+                padded[current_len:] = 0
                 
                 # 3. FFT
+
+                # overwrite_x=False to keep padded clean? No, we rewrite it anyway.
+                # But standard FFT might allocate new output array.
                 spec = scipy.fft.fft(padded)
                 spec_mag = np.abs(spec)
                 
@@ -229,6 +281,9 @@ class MainWindow(QMainWindow):
         self.current_evo_data = None
         self.current_processed_time = None
         
+        # New: Explicit sampling rate storage
+        self.sampling_rate = 1000.0 # Default fallback
+
         # Debounce Timer for sliders
         self.update_timer = QTimer()
         self.update_timer.setSingleShot(True)
@@ -550,19 +605,38 @@ class MainWindow(QMainWindow):
         relax_layout = QHBoxLayout(self.relax_settings_widget)
         relax_layout.setContentsMargins(0,0,0,0)
         
-        relax_layout.addWidget(QLabel("Sweep Start (ms):"))
+        relax_layout.addWidget(QLabel("Unit:"))
+        self.combo_relax_unit = QComboBox()
+        self.combo_relax_unit.addItems(["Time (ms)", "Points"])
+        self.combo_relax_unit.currentTextChanged.connect(self.update_relax_ui_state)
+        relax_layout.addWidget(self.combo_relax_unit)
+
+        self.lbl_relax_start = QLabel("Start:")
+        relax_layout.addWidget(self.lbl_relax_start)
+        
         self.spin_relax_start = QDoubleSpinBox()
-        self.spin_relax_start.setRange(0, 10000) # 0 to 10s
+        self.spin_relax_start.setRange(0, 500000) 
         self.spin_relax_start.setValue(0)
         self.spin_relax_start.setSingleStep(10)
+        self.spin_relax_start.setSuffix(" ms")
         relax_layout.addWidget(self.spin_relax_start)
         
-        relax_layout.addWidget(QLabel("End (ms):"))
+        self.lbl_relax_end = QLabel("End:")
+        relax_layout.addWidget(self.lbl_relax_end)
+        
         self.spin_relax_end = QDoubleSpinBox()
-        self.spin_relax_end.setRange(0, 10000)
-        self.spin_relax_end.setValue(500) # Default 500ms
+        self.spin_relax_end.setRange(0, 500000)
+        self.spin_relax_end.setValue(500) 
         self.spin_relax_end.setSingleStep(10)
+        self.spin_relax_end.setSuffix(" ms")
         relax_layout.addWidget(self.spin_relax_end)
+        
+        relax_layout.addWidget(QLabel("Points:"))
+        self.spin_relax_points = QSpinBox()
+        self.spin_relax_points.setRange(10, 500)
+        self.spin_relax_points.setValue(50)
+        self.spin_relax_points.setSingleStep(10)
+        relax_layout.addWidget(self.spin_relax_points)
         
         relax_layout.addStretch()
         
@@ -628,6 +702,18 @@ class MainWindow(QMainWindow):
         if self.raw_avg_data is not None:
             self.update_timer.start()
 
+    def update_relax_ui_state(self, unit):
+        if unit == "Points":
+             self.spin_relax_start.setSuffix(" pts")
+             self.spin_relax_start.setDecimals(0)
+             self.spin_relax_end.setSuffix(" pts")
+             self.spin_relax_end.setDecimals(0)
+        else:
+             self.spin_relax_start.setSuffix(" ms")
+             self.spin_relax_start.setDecimals(1)
+             self.spin_relax_end.setSuffix(" ms")
+             self.spin_relax_end.setDecimals(1)
+
     def on_analysis_mode_changed(self, index):
         # Clear current plot to hint change
         self.ax_evo.clear()
@@ -657,6 +743,7 @@ class MainWindow(QMainWindow):
     def on_loading_finished(self, avg_data, sampling_rate, count):
         self.raw_avg_data = avg_data
         self.loader_sampling_rate = sampling_rate
+        self.sampling_rate = sampling_rate # Store for general use
         
         self.btn_load.setEnabled(True)
         self.btn_reprocess.setEnabled(True)
@@ -983,11 +1070,21 @@ class MainWindow(QMainWindow):
         # Use RAW average data for this analysis to be accurate
         # (Assuming raw_avg_data is the time domain signal)
         
-        sampling_rate = self.loader_worker.sampling_rate if hasattr(self, 'loader_worker') else 1000.0
+        sampling_rate = self.sampling_rate
         
         # Get Time Range from UI
-        t_start = self.spin_relax_start.value() / 1000.0
-        t_end = self.spin_relax_end.value() / 1000.0
+        val_start = self.spin_relax_start.value()
+        val_end = self.spin_relax_end.value()
+        unit = self.combo_relax_unit.currentText()
+        
+        if unit == "Points":
+             t_start = val_start / sampling_rate
+             t_end = val_end / sampling_rate
+        else:
+             t_start = val_start / 1000.0
+             t_end = val_end / 1000.0
+             
+        points = self.spin_relax_points.value()
         
         self.relax_worker = RelaxationWorker(
             self.raw_avg_data, 
@@ -995,17 +1092,25 @@ class MainWindow(QMainWindow):
             sampling_rate,
             params,
             t_start=t_start,
-            t_end=t_end
+            t_end=t_end,
+            points=points
         )
         # Need sampling rate. self.loader_worker might be gone or recycled.
         # But we stored sampling_rate in on_loading_finished?
         # Let's check on_loading_finished
         
         self.relax_worker.finished.connect(self.plot_relaxation_results)
+        self.relax_worker.progress.connect(self.on_worker_progress)
         self.relax_worker.error.connect(lambda e: QMessageBox.warning(self, "Analysis Error", e))
         self.relax_worker.start()
 
+    def on_worker_progress(self, msg, val):
+        self.statusBar().showMessage(msg)
+        self.progress_bar.setValue(val)
+
     def plot_relaxation_results(self, times, amps, fit_x, fit_y, t2, r2):
+        self.progress_bar.setValue(100)
+        self.statusBar().showMessage("Relaxation Analysis Complete")
         self.ax_evo.clear()
         
         # Plot Data
