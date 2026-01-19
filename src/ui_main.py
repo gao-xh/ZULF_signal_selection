@@ -73,7 +73,7 @@ class RelaxationWorker(QThread):
     progress = Signal(str, int) # message, percent
     error = Signal(str)
 
-    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0, points=50):
+    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False):
         super().__init__()
         self.data = full_data
         self.target_freq = target_freq
@@ -82,6 +82,7 @@ class RelaxationWorker(QThread):
         self.t_start = t_start
         self.t_end = t_end
         self.points = points
+        self.zero_fill_front = zero_fill_front
 
     def run(self):
         try:
@@ -155,27 +156,30 @@ class RelaxationWorker(QThread):
                     pcl = int((i / total_steps) * 100)
                     self.progress.emit(f"Analyzing Relaxation Step {i}/{total_steps}...", pcl)
 
-                # 1. Slice (View)
-                # segment = self.data[start_iter:] 
-                
-                # 2. Update Buffer (Minimal copy)
-                # We need to construct [segment, 0, 0, ...]
-                # Length of segment is N - start_iter
-                current_len = N - start_iter
-                
                 # Extract segment
                 raw_segment = self.data[start_iter:]
                 
                 # Apply Processing (Baseline, Appodization)
                 processed_segment = apply_segment_processing(raw_segment)
                 
-                # Copy processed data to buffer
-                padded[:current_len] = processed_segment
-                
-                # Zero out the rest 
-                padded[current_len:] = 0
+                if self.zero_fill_front:
+                    # MODE: Zero-Fill Front (Keep data in place)
+                    # Structure: [0...0, processed_segment..., 0...]
+                    # Clear buffer to zero (in case it has old data)
+                    padded[:] = 0
+                    # Insert at original position
+                    # processed_segment length is (N - start_iter)
+                    padded[start_iter:] = processed_segment
+                else:
+                    # MODE: Shift Left (Cut front) - Standard
+                    # Structure: [processed_segment..., 0...0]
+                    # Copy to start
+                    padded[:len(processed_segment)] = processed_segment
+                    # Clean the rest
+                    padded[len(processed_segment):] = 0
                 
                 # 3. FFT
+                # overwrite_x=False to keep padded clean? No, we rewrite it anyway.
 
                 # overwrite_x=False to keep padded clean? No, we rewrite it anyway.
                 # But standard FFT might allocate new output array.
@@ -649,6 +653,11 @@ class MainWindow(QMainWindow):
         self.spin_relax_points.setSingleStep(10)
         relax_layout.addWidget(self.spin_relax_points)
         
+        # Zero-Fill Checkbox
+        self.chk_relax_zerofill = QCheckBox("Zero-Fill Front")
+        self.chk_relax_zerofill.setToolTip("If checked, truncated points are replaced by zeros (maintain phase).\nIf unchecked, signal is shifted to start (standard).")
+        relax_layout.addWidget(self.chk_relax_zerofill)
+        
         relax_layout.addStretch()
         
         evo_layout.addWidget(self.relax_settings_widget)
@@ -727,6 +736,7 @@ class MainWindow(QMainWindow):
                 'relax_start': self.spin_relax_start.value(),
                 'relax_end': self.spin_relax_end.value(),
                 'relax_points': self.spin_relax_points.value(),
+                'relax_zerofill': self.chk_relax_zerofill.isChecked(),
                 
                 # Plot Settings
                 'view_freq_min': self.freq_min.value(),
@@ -798,6 +808,8 @@ class MainWindow(QMainWindow):
             set_val(self.spin_relax_start, 'relax_start', float)
             set_val(self.spin_relax_end, 'relax_end', float)
             set_val(self.spin_relax_points, 'relax_points', int)
+            if 'relax_zerofill' in params:
+                self.chk_relax_zerofill.setChecked(params['relax_zerofill'])
             
             if 'view_freq_min' in params: self.freq_min.setValue(params['view_freq_min'])
             if 'view_freq_max' in params: self.freq_max.setValue(params['view_freq_max'])
@@ -1232,6 +1244,7 @@ class MainWindow(QMainWindow):
              t_end = val_end / 1000.0
              
         points = self.spin_relax_points.value()
+        zero_fill_front = self.chk_relax_zerofill.isChecked()
         
         self.relax_worker = RelaxationWorker(
             self.raw_avg_data, 
@@ -1240,7 +1253,8 @@ class MainWindow(QMainWindow):
             params,
             t_start=t_start,
             t_end=t_end,
-            points=points
+            points=points,
+            zero_fill_front=zero_fill_front
         )
         # Need sampling rate. self.loader_worker might be gone or recycled.
         # But we stored sampling_rate in on_loading_finished?
