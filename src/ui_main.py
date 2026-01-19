@@ -644,6 +644,11 @@ class MainWindow(QMainWindow):
         self.relax_settings_widget.setVisible(False)
 
         evo_layout.addWidget(QLabel("Click a signal peak in the spectrum above to analyze."))
+        
+        # Add Toolbar for Evolution Plot
+        evo_toolbar = NavigationToolbar(self.canvas_evo, evo_container)
+        evo_layout.addWidget(evo_toolbar)
+        
         evo_layout.addWidget(self.canvas_evo)
         right_splitter.addWidget(evo_container)
         
