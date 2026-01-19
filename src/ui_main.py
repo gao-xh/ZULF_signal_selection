@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QFileDialog, QSplitter, QProgressBar, QMessageBox,
     QTabWidget, QLabel, QListWidget, QAbstractItemView, QGridLayout, QDoubleSpinBox,
-    QCheckBox, QComboBox, QScrollArea, QSpinBox
+    QCheckBox, QComboBox, QScrollArea, QSpinBox, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 
@@ -617,6 +617,7 @@ class MainWindow(QMainWindow):
 
         # Relaxation Settings Group (Hidden by default)
         self.relax_settings_widget = QWidget()
+        self.relax_settings_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         relax_layout = QHBoxLayout(self.relax_settings_widget)
         relax_layout.setContentsMargins(0,0,0,0)
         
@@ -669,7 +670,9 @@ class MainWindow(QMainWindow):
         evo_toolbar = NavigationToolbar(self.canvas_evo, evo_container)
         evo_layout.addWidget(evo_toolbar)
         
-        evo_layout.addWidget(self.canvas_evo)
+        # Ensure canvas expands
+        self.canvas_evo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        evo_layout.addWidget(self.canvas_evo, stretch=1)
         right_splitter.addWidget(evo_container)
         
         self.main_splitter.addWidget(right_splitter)
