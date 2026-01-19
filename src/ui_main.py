@@ -1081,14 +1081,33 @@ class MainWindow(QMainWindow):
              self.spin_relax_end.setDecimals(1)
 
     def on_analysis_mode_changed(self, index):
-        # Clear current plot to hint change
-        self.ax_evo.clear()
-        self.ax_evo.text(0.5, 0.5, "Click a peak to analyze", ha='center', va='center')
-        self.canvas_evo.draw()
-        
-        is_relax = self.combo_analysis_mode.currentText().startswith("Relaxation")
+        mode_text = self.combo_analysis_mode.currentText()
+        is_global = mode_text.startswith("Global")
+        is_relax = mode_text.startswith("Relaxation") or is_global
+
+        # 1. Manage Settings Visibility
         if hasattr(self, 'relax_settings_widget'):
             self.relax_settings_widget.setVisible(is_relax)
+            
+        # 2. Manage Batch Button Visibility
+        if hasattr(self, 'btn_batch_run'):
+            self.btn_batch_run.setVisible(is_global)
+
+        # 3. Manage Detail Plot Visibility
+        if hasattr(self, 'plot_container_2'):
+            self.plot_container_2.setVisible(is_global)
+
+        # 4. Reset Plots
+        self.ax_evo.clear()
+        if is_global:
+            self.ax_evo.text(0.5, 0.5, "Click 'Run Global Map' to start", ha='center', va='center')
+            self.ax_detail.clear()
+            self.ax_detail.grid(True)
+            self.canvas_detail.draw()
+        else:
+            self.ax_evo.text(0.5, 0.5, "Click a peak to analyze", ha='center', va='center')
+        
+        self.canvas_evo.draw()
 
     def run_loading(self):
         if not self.folder_paths:
@@ -1592,6 +1611,7 @@ class MainWindow(QMainWindow):
         )
         self.batch_worker.finished.connect(self.on_batch_analysis_finished)
         self.batch_worker.progress.connect(self.on_worker_progress)
+        self.batch_worker.error.connect(lambda e: [self.btn_batch_run.setEnabled(True), QMessageBox.critical(self, "Batch Error", f"Analysis failed: {e}")])
         self.batch_worker.start()
 
     def on_batch_analysis_finished(self, results):
