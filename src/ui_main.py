@@ -234,6 +234,178 @@ class RelaxationWorker(QThread):
             self.error.emit(str(e))
 
 
+class BatchRelaxationWorker(QThread):
+    finished = Signal(object) # results_dict
+    progress = Signal(str, int)
+    error = Signal(str)
+
+    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False):
+        super().__init__()
+        self.data = full_data
+        self.target_freqs = target_freqs_df # DataFrame with 'Freq_Hz' column
+        self.fs = sampling_rate
+        self.params = params
+        self.t_start = t_start
+        self.t_end = t_end
+        self.points = points
+        self.zero_fill_front = zero_fill_front
+
+    def run(self):
+        try:
+            from scipy.stats import linregress
+            import scipy.fft
+            
+            # Use complex128 if input is complex, else float
+            dtype = self.data.dtype if np.iscomplexobj(self.data) else np.complex128
+            N = len(self.data)
+            full_freqs = scipy.fft.fftfreq(N, d=1.0/self.fs)
+            
+            # Param Ranges
+            if self.t_end > self.t_start:
+                start_p = int(self.t_start * self.fs)
+                end_p = int(self.t_end * self.fs)
+            else:
+                start_p = 0
+                end_p = int(N * 0.6)
+                
+            if start_p < 0: start_p = 0
+            if end_p >= N: end_p = N - 1
+            if end_p <= start_p: end_p = start_p + 100
+            
+            span = end_p - start_p
+            step = max(1, span // self.points)
+            trunc_points_list = list(range(start_p, end_p, step))
+            
+            # Helper Logic (Duplicated from RelaxationWorker to be self-contained in thread)
+            def apply_segment_processing(segment_data):
+                # 1. Savgol 
+                if self.params.get('conv_points', 0) > 0:
+                    window = int(self.params['conv_points'])
+                    order = int(self.params['poly_order'])
+                    if window % 2 == 0: window += 1
+                    if window > 3 and window < len(segment_data):
+                        smooth = scipy.signal.savgol_filter(segment_data.real, window, order, mode='mirror')
+                        segment_data = segment_data - smooth
+                # 2. Apodization
+                t2_apod = self.params.get('apod_t2star', 0)
+                if t2_apod > 0:
+                     t_axis = np.linspace(0, len(segment_data)/self.fs, len(segment_data), endpoint=False)
+                     window_func = np.exp(-t_axis / t2_apod)
+                     segment_data = segment_data * window_func
+                return segment_data
+            
+            # Pre-allocate buffer
+            padded = np.zeros(N, dtype=dtype)
+            
+            # We need to run the sweep for EACH freq?
+            # NO! That would be inefficient. ONE sweep over time, then measure ALL peaks in spectrum.
+            # Correct approach:
+            # Loop over Time Steps:
+            #   Calculate FFT
+            #   Loop over Target Freqs:
+            #       Measure Amp
+            
+            # Prepare result structures
+            # Dictionary: freq -> {times:[], amps:[]}
+            curve_data = { row['Freq_Hz']: {'times': [], 'amps': []} for _, row in self.target_freqs.iterrows() }
+            
+            # Map freq to index in FFT
+            freq_to_idx = {}
+            for f in curve_data.keys():
+                freq_to_idx[f] = np.argmin(np.abs(full_freqs - f))
+                
+            search_r = 5
+            
+            total_steps = len(trunc_points_list)
+            
+            for i, start_iter in enumerate(trunc_points_list):
+                 if i % 5 == 0:
+                    pcl = int((i / total_steps) * 100)
+                    self.progress.emit(f"Batch Analysis: Scanning Time Step {i}/{total_steps}...", pcl)
+                    
+                 # 1. Processing
+                 raw_segment = self.data[start_iter:]
+                 processed_segment = apply_segment_processing(raw_segment)
+                 
+                 if self.zero_fill_front:
+                    padded[:] = 0
+                    padded[start_iter:] = processed_segment
+                 else:
+                    padded[:len(processed_segment)] = processed_segment
+                    padded[len(processed_segment):] = 0
+                    
+                 # 2. FFT
+                 spec = scipy.fft.fft(padded)
+                 spec_mag = np.abs(spec)
+                 
+                 current_time = start_iter / self.fs
+                 
+                 # 3. Measure All Peaks
+                 for f_key, idx_center in freq_to_idx.items():
+                     idx_start = max(0, idx_center - search_r)
+                     idx_end = min(N, idx_center + search_r + 1)
+                     
+                     if idx_end > idx_start:
+                        peak_amp = np.max(spec_mag[idx_start:idx_end])
+                     else:
+                        peak_amp = 0
+                     
+                     curve_data[f_key]['times'].append(current_time)
+                     curve_data[f_key]['amps'].append(peak_amp)
+            
+            # Post-processing: Fit T2* for all
+            summary_list = []
+            
+            detailed_results = {}
+            
+            for f_key, data_c in curve_data.items():
+                 times = np.array(data_c['times'])
+                 amps = np.array(data_c['amps'])
+                 
+                 t2 = 0
+                 r2 = 0
+                 fit_x = []
+                 fit_y = []
+                 
+                 valid = amps > 0
+                 if np.sum(valid) > 2:
+                     x_fit = times[valid]
+                     y_fit_log = np.log(amps[valid])
+                     slope, intercept, r_val, _, _ = linregress(x_fit, y_fit_log)
+                     
+                     if slope < 0:
+                        t2 = -1.0 / slope
+                     r2 = r_val**2
+                     
+                     if r2 > 0:
+                         fit_x = np.linspace(min(x_fit), max(x_fit), 50)
+                         fit_y = np.exp(intercept + slope * fit_x)
+                 
+                 summary_list.append({
+                     'Freq_Hz': f_key,
+                     'T2_star_ms': t2 * 1000.0,
+                     'R2': r2
+                 })
+                 
+                 detailed_results[f_key] = {
+                     'times': times,
+                     'amps': amps,
+                     'fit_x': fit_x,
+                     'fit_y': fit_y,
+                     't2': t2,
+                     'r2': r2
+                 }
+                 
+            summary_df = pd.DataFrame(summary_list)
+            
+            self.finished.emit({
+                'summary': summary_df,
+                'details': detailed_results
+            })
+            
+        except Exception as e:
+            self.error.emit(str(e))
+
 class ProcessWorker(QThread):
     finished = Signal(object, object, object) # freqs, spec, time_data
     error = Signal(str)
@@ -594,25 +766,20 @@ class MainWindow(QMainWindow):
 
         right_splitter.addWidget(spec_container)
         
-        # Bottom: Evolution View
-        self.fig_evo = Figure(figsize=(8, 3))
-        self.canvas_evo = FigureCanvas(self.fig_evo)
-        self.ax_evo = self.fig_evo.add_subplot(111)
-        
+        # Bottom: Evolution/Analysis View
         evo_container = QWidget()
         evo_layout = QVBoxLayout(evo_container)
         
         # Analysis Mode Selection
         self.lbl_analysis_mode = QLabel("Analysis Mode:")
         self.combo_analysis_mode = QComboBox()
-        self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Relaxation Analysis (Amp vs t)"])
+        self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Relaxation Analysis (Amp vs t)", "Global T2* Map"])
         self.combo_analysis_mode.currentIndexChanged.connect(self.on_analysis_mode_changed)
         
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(self.lbl_analysis_mode)
         mode_layout.addWidget(self.combo_analysis_mode)
         mode_layout.addStretch()
-        
         evo_layout.addLayout(mode_layout)
 
         # Relaxation Settings Group (Hidden by default)
@@ -658,6 +825,12 @@ class MainWindow(QMainWindow):
         self.chk_relax_zerofill = QCheckBox("Zero-Fill Front")
         self.chk_relax_zerofill.setToolTip("If checked, truncated points are replaced by zeros (maintain phase).\nIf unchecked, signal is shifted to start (standard).")
         relax_layout.addWidget(self.chk_relax_zerofill)
+
+        # Batch Run Button
+        self.btn_batch_run = QPushButton("Run Global Map")
+        self.btn_batch_run.setToolTip("Analyze T2* for all detected peaks")
+        self.btn_batch_run.clicked.connect(self.run_batch_analysis)
+        relax_layout.addWidget(self.btn_batch_run)
         
         relax_layout.addStretch()
         
@@ -666,13 +839,44 @@ class MainWindow(QMainWindow):
 
         evo_layout.addWidget(QLabel("Click a signal peak in the spectrum above to analyze."))
         
-        # Add Toolbar for Evolution Plot
-        evo_toolbar = NavigationToolbar(self.canvas_evo, evo_container)
-        evo_layout.addWidget(evo_toolbar)
+        # Plot Area with Splitter
+        self.ana_splitter = QSplitter(Qt.Horizontal)
         
-        # Ensure canvas expands
+        # Plot 1: Main (Evolution / Single Peak / Global Scatter)
+        self.plot_container_1 = QWidget()
+        l_1 = QVBoxLayout(self.plot_container_1)
+        l_1.setContentsMargins(0,0,0,0)
+        
+        self.fig_evo = Figure(figsize=(5, 3))
+        self.canvas_evo = FigureCanvas(self.fig_evo)
+        self.ax_evo = self.fig_evo.add_subplot(111)
         self.canvas_evo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        evo_layout.addWidget(self.canvas_evo, stretch=1)
+        
+        self.toolbar_evo = NavigationToolbar(self.canvas_evo, self.plot_container_1)
+        l_1.addWidget(self.toolbar_evo)
+        l_1.addWidget(self.canvas_evo)
+        
+        # Plot 2: Detail (Decay Curve)
+        self.plot_container_2 = QWidget()
+        l_2 = QVBoxLayout(self.plot_container_2)
+        l_2.setContentsMargins(0,0,0,0)
+        
+        self.fig_detail = Figure(figsize=(5, 3))
+        self.canvas_detail = FigureCanvas(self.fig_detail)
+        self.ax_detail = self.fig_detail.add_subplot(111)
+        self.canvas_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        self.toolbar_detail = NavigationToolbar(self.canvas_detail, self.plot_container_2)
+        l_2.addWidget(self.toolbar_detail)
+        l_2.addWidget(self.canvas_detail)
+
+        self.ana_splitter.addWidget(self.plot_container_1)
+        self.ana_splitter.addWidget(self.plot_container_2)
+        
+        # Initially hide the second plot
+        self.plot_container_2.hide()
+
+        evo_layout.addWidget(self.ana_splitter, stretch=1)
         right_splitter.addWidget(evo_container)
         
         self.main_splitter.addWidget(right_splitter)
@@ -973,7 +1177,10 @@ class MainWindow(QMainWindow):
         self.ax_time.set_ylabel("Amplitude")
         self.ax_time.grid(True, linestyle='--', alpha=0.5)
 
-        self.fig_time.tight_layout()
+        try:
+            self.fig_time.tight_layout()
+        except:
+            pass
         self.canvas_time.draw()
 
     def start_analysis(self):
@@ -1096,6 +1303,11 @@ class MainWindow(QMainWindow):
         pos_freqs = freqs[pos_mask]
         pos_data = plot_data[pos_mask]
         
+        # Guard against empty or singular data (prevents Singular Matrix error in axvspan)
+        if len(pos_freqs) < 2:
+            self.canvas_spec.draw()
+            return
+
         self.ax_spec.plot(pos_freqs, pos_data, 'k-', linewidth=0.8, alpha=0.6, label=f'Spectrum ({mode_label})')
         
         # --- Visualization of Detection Params ---
@@ -1288,9 +1500,11 @@ class MainWindow(QMainWindow):
         self.ax_evo.set_ylabel("Peak Amplitude")
         self.ax_evo.set_title(f"Relaxation Analysis (R2={r2:.3f})")
         self.ax_evo.legend()
-        self.ax_evo.grid(True, linestyle='--', alpha=0.5)
         
-        self.fig_evo.tight_layout()
+        try:
+             self.fig_evo.tight_layout()
+        except:
+             pass
         self.canvas_evo.draw()
 
     def plot_evolution(self, idx):
@@ -1323,8 +1537,138 @@ class MainWindow(QMainWindow):
         self.ax_evo.grid(True, linestyle='--', alpha=0.5)
         self.ax_evo.legend()
         
-        self.fig_evo.tight_layout()
+        try:
+             self.fig_evo.tight_layout()
+        except:
+             pass
         self.canvas_evo.draw()
+
+
+    def run_batch_analysis(self):
+        if self.current_results is None or self.raw_avg_data is None:
+             QMessageBox.warning(self, "No Data", "Please process data first.")
+             return
+             
+        # Filter valid peaks
+        valid_peaks = self.current_results[self.current_results['Verdict'] == True]
+        if valid_peaks.empty:
+            QMessageBox.information(self, "Info", "No valid peaks detected.")
+            return
+            
+        # Params
+        params = self._get_process_params()
+        sampling_rate = self.sampling_rate
+        
+        val_start = self.spin_relax_start.value()
+        val_end = self.spin_relax_end.value()
+        unit = self.combo_relax_unit.currentText()
+        
+        if unit == "Points":
+             t_start = val_start / sampling_rate
+             t_end = val_end / sampling_rate
+        else:
+             t_start = val_start / 1000.0
+             t_end = val_end / 1000.0
+             
+        points = self.spin_relax_points.value()
+        zero_fill_front = self.chk_relax_zerofill.isChecked()
+
+        # UI State
+        self.btn_batch_run.setEnabled(False)
+        self.progress_bar.setRange(0, 100) # Ensure range is set
+        self.progress_bar.setValue(0)
+        self.ax_evo.clear()
+        self.ax_evo.text(0.5, 0.5, "Running Batch Analysis...", ha='center', va='center')
+        self.canvas_evo.draw()
+        
+        # Worker
+        self.batch_worker = BatchRelaxationWorker(
+            self.raw_avg_data,
+            valid_peaks, 
+            sampling_rate,
+            params,
+            t_start, t_end, points,
+            zero_fill_front
+        )
+        self.batch_worker.finished.connect(self.on_batch_analysis_finished)
+        self.batch_worker.progress.connect(self.on_worker_progress)
+        self.batch_worker.start()
+
+    def on_batch_analysis_finished(self, results):
+        self.btn_batch_run.setEnabled(True)
+        self.progress_bar.setValue(100)
+        self.statusBar().showMessage("Batch Analysis Complete")
+        
+        self.batch_results_summary = results['summary']
+        self.batch_results_details = results['details']
+        
+        self.plot_global_results()
+        
+    def plot_global_results(self):
+        self.ax_evo.clear()
+        self.ax_detail.clear() # Clear detail too
+        
+        df = self.batch_results_summary
+        if df.empty:
+             self.ax_evo.text(0.5, 0.5, "No results", ha='center')
+             self.canvas_evo.draw()
+             return
+             
+        # Scatter Freq vs T2*
+        # Use simple scatter with picker=5
+        sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_ms'], c=df['R2'], cmap='viridis', picker=5, s=40, edgecolors='k')
+        self.ax_evo.set_xlabel('Frequency (Hz)')
+        self.ax_evo.set_ylabel('T2* (ms)')
+        self.ax_evo.set_title(f"Global T2* Map (n={len(df)})")
+        self.ax_evo.grid(True, alpha=0.3)
+        
+        # Colorbar - trick to manage it
+        if hasattr(self, 'cbar_evo'):
+            try: self.cbar_evo.remove()
+            except: pass
+        self.cbar_evo = self.fig_evo.colorbar(sc, ax=self.ax_evo, label='Fit R2')
+        
+        self.canvas_evo.draw()
+        
+        # Connect pick event for this canvas if not connected
+        if not hasattr(self, '_global_pick_cid'):
+             self._global_pick_cid = self.canvas_evo.mpl_connect('pick_event', self.on_global_pick)
+
+    def on_global_pick(self, event):
+        # Only act if we are in Global mode
+        if not self.combo_analysis_mode.currentText().startswith("Global"):
+            return
+
+        ind = event.ind[0]
+        df = self.batch_results_summary
+        if ind < len(df):
+            row = df.iloc[ind]
+            freq = row['Freq_Hz']
+            self.plot_detail_curve(freq)
+            
+    def plot_detail_curve(self, freq):
+        # Retrieve detail data
+        data = self.batch_results_details.get(freq)
+        if not data: return
+        
+        self.ax_detail.clear()
+        
+        times = data['times'] * 1000 # to ms
+        amps = data['amplitudes']
+        fit = data['fit']
+        popt = data['popt']
+        r2 = data['r2']
+        
+        self.ax_detail.plot(times, amps, 'bo', label='Data')
+        self.ax_detail.plot(times, fit, 'r-', label=f'Fit (T2*={popt[1]*1000:.1f}ms)')
+        
+        self.ax_detail.set_xlabel('Delay (ms)')
+        self.ax_detail.set_ylabel('Amplitude')
+        self.ax_detail.set_title(f"Decay @ {freq:.1f} Hz")
+        self.ax_detail.legend(fontsize='small')
+        self.ax_detail.grid(True)
+        
+        self.canvas_detail.draw()
 
 def main():
     app = QApplication(sys.argv)
