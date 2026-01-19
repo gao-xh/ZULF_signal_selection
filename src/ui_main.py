@@ -1,4 +1,5 @@
 import sys
+import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -298,6 +299,16 @@ class MainWindow(QMainWindow):
         return range_tuple[0], range_tuple[1], range_tuple[3], range_tuple[2]
         
     def _setup_ui(self):
+        # Menu Bar
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+        
+        load_action = file_menu.addAction("Load Parameters")
+        load_action.triggered.connect(self.load_parameters)
+        
+        save_action = file_menu.addAction("Save Parameters")
+        save_action.triggered.connect(self.save_parameters)
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -673,6 +684,137 @@ class MainWindow(QMainWindow):
         self.folder_paths = []
         self.folder_list.clear()
         self.btn_run.setEnabled(False)
+
+    def save_parameters(self):
+        """Save current parameters to JSON file"""
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "Save Parameters", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_name:
+            return
+            
+        try:
+            # 1. Processing Params (from _get_process_params)
+            # We construct this manually to include UI states that might not be in _get_process_params yet
+            params = {
+                'savgol_window': self.savgol_window.value(),
+                'savgol_order': self.savgol_order.value(),
+                'apod_rate': self.apod_rate.value(),
+                'p0': self.p0_slider.value(),
+                'p1': self.p1_slider.value(),
+                'trunc_start': self.trunc_slider.value(),
+                'trunc_end': self.trunc_end_slider.value(),
+                'enable_svd': self.chk_svd.isChecked(),
+                
+                # Peak picking
+                'peak_height_abs': self.peak_thr.value(),
+                'sys_freq_min': self.freq_min_search.value(),
+                'sys_freq_max': self.freq_max_search.value(),
+                'peak_window': self.peak_win.value(),
+                
+                # Noise
+                'noise_method': self.combo_noise_method.currentText(),
+                'noise_freq_min': self.noise_min.value(),
+                'noise_freq_max': self.noise_max.value(),
+                'noise_local_window': self.noise_local_win.value(),
+                
+                # Verdict
+                'min_r2': self.thr_r2.value(),
+                'min_slope': self.thr_slope.value(),
+                
+                # Relaxation Analysis Settings
+                'relax_unit': self.combo_relax_unit.currentText(),
+                'relax_start': self.spin_relax_start.value(),
+                'relax_end': self.spin_relax_end.value(),
+                'relax_points': self.spin_relax_points.value(),
+                
+                # Plot Settings
+                'view_freq_min': self.freq_min.value(),
+                'view_freq_max': self.freq_max.value(),
+                'analysis_mode': self.combo_analysis_mode.currentText()
+            }
+            
+            with open(file_name, 'w') as f:
+                json.dump(params, f, indent=4)
+                
+            self.statusBar().showMessage(f"Parameters saved to {file_name}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save parameters:\n{str(e)}")
+
+    def load_parameters(self):
+        """Load parameters from JSON file"""
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Load Parameters", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_name:
+            return
+            
+        try:
+            with open(file_name, 'r') as f:
+                params = json.load(f)
+            
+            # Helper to safely set values
+            def set_val(widget, key, cast=float):
+                if key in params:
+                    # Handle SliderSpinBox (has spinbox attribute) vs QDoubleSpinBox/QSpinBox
+                    val = cast(params[key])
+                    if hasattr(widget, 'spinbox'): 
+                        widget.spinbox.setValue(val)
+                    else:
+                        widget.setValue(val)
+
+            # Block signals to avoid massive processing triggers
+            self.blockSignals(True)
+            
+            set_val(self.savgol_window, 'savgol_window', int)
+            set_val(self.savgol_order, 'savgol_order', int)
+            set_val(self.apod_rate, 'apod_rate', float)
+            set_val(self.p0_slider, 'p0', float)
+            set_val(self.p1_slider, 'p1', float)
+            set_val(self.trunc_slider, 'trunc_start', int)
+            set_val(self.trunc_end_slider, 'trunc_end', int)
+            
+            if 'enable_svd' in params:
+                self.chk_svd.setChecked(params['enable_svd'])
+                
+            set_val(self.peak_thr, 'peak_height_abs', float)
+            set_val(self.freq_min_search, 'sys_freq_min', float)
+            set_val(self.freq_max_search, 'sys_freq_max', float)
+            set_val(self.peak_win, 'peak_window', int)
+            
+            if 'noise_method' in params:
+                self.combo_noise_method.setCurrentText(params['noise_method'])
+            
+            set_val(self.noise_min, 'noise_freq_min', float)
+            set_val(self.noise_max, 'noise_freq_max', float)
+            set_val(self.noise_local_win, 'noise_local_window', int)
+            
+            set_val(self.thr_r2, 'min_r2', float)
+            set_val(self.thr_slope, 'min_slope', float)
+            
+            if 'relax_unit' in params:
+                self.combo_relax_unit.setCurrentText(params['relax_unit'])
+            set_val(self.spin_relax_start, 'relax_start', float)
+            set_val(self.spin_relax_end, 'relax_end', float)
+            set_val(self.spin_relax_points, 'relax_points', int)
+            
+            if 'view_freq_min' in params: self.freq_min.setValue(params['view_freq_min'])
+            if 'view_freq_max' in params: self.freq_max.setValue(params['view_freq_max'])
+            
+            if 'analysis_mode' in params:
+                self.combo_analysis_mode.setCurrentText(params['analysis_mode'])
+
+            self.blockSignals(False)
+            self.statusBar().showMessage(f"Parameters loaded from {file_name}")
+            
+            # Trigger updates
+            self.plot_spectrum_traffic_light()
+            self.update_verdicts()
+            
+        except Exception as e:
+            self.blockSignals(False)
+            QMessageBox.critical(self, "Error", f"Failed to load parameters:\n{str(e)}")
 
     def _get_process_params(self):
         # Determine current detection mode
