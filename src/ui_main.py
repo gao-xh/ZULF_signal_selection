@@ -498,24 +498,25 @@ class MainWindow(QMainWindow):
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QScrollArea.NoFrame)
-        left_scroll.setMinimumWidth(330) # Slightly wider default
+        left_scroll.setMinimumWidth(390) 
         
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(5, 5, 5, 5)
         
         left_scroll.setWidget(left_panel)
         self.main_splitter.addWidget(left_scroll)
         
-        # 0. Data Selection
+        # 0. Data Selection (Common)
         folder_group = QGroupBox("Data Selection")
         folder_layout = QVBoxLayout()
         self.folder_list = QListWidget()
         self.folder_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.folder_list.setFixedHeight(100)
+        self.folder_list.setFixedHeight(80)
         folder_layout.addWidget(self.folder_list)
         
         btn_layout = QHBoxLayout()
-        self.btn_add_folder = QPushButton("Add Folder(s)")
+        self.btn_add_folder = QPushButton("Add")
         self.btn_add_folder.clicked.connect(self.add_folders)
         btn_layout.addWidget(self.btn_add_folder)
         
@@ -526,22 +527,28 @@ class MainWindow(QMainWindow):
         folder_group.setLayout(folder_layout)
         left_layout.addWidget(folder_group)
         
-        # 1. Processing Controls
-        proc_group = QGroupBox("Processing Parameters")
-        proc_layout = QVBoxLayout()
-        
+        # --- Tab ToolBox ---
+        self.tabs_control = QTabWidget()
+        left_layout.addWidget(self.tabs_control)
+
+        # === TAB 1: PREPROCESSING ===
+        self.tab_process = QWidget()
+        proc_tab_layout = QVBoxLayout(self.tab_process)
+        proc_tab_layout.setContentsMargins(5, 5, 5, 5)
+
+        # 1. Processing Parameters
         r = UI_PARAM_RANGES
+        proc_group = QGroupBox("Signal Processing")
+        proc_layout = QVBoxLayout()
         
         # SVD Checkbox
         self.chk_svd = QCheckBox("Enable SVD Denoising")
-        self.chk_svd.setChecked(False)
-        self.chk_svd.setToolTip("Enable Singular Value Decomposition (Slow but effective)")
+        self.chk_svd.setToolTip("Enable Singular Value Decomposition")
         proc_layout.addWidget(self.chk_svd)
         self.chk_svd.stateChanged.connect(self.request_processing_update)
 
         self.savgol_window = SliderSpinBox("Savgol Window", *self._unpack(r['savgol_window']))
         proc_layout.addWidget(self.savgol_window)
-        # Connect signals
         self.savgol_window.valueChanged.connect(self.request_processing_update)
         
         self.savgol_order = SliderSpinBox("Savgol Order", *self._unpack(r['savgol_order']))
@@ -567,12 +574,11 @@ class MainWindow(QMainWindow):
         self.p0_slider.valueChanged.connect(self.request_processing_update)
 
         self.p1_slider = SliderSpinBox("Phase 1 (deg)", *self._unpack(r['phase_1']), is_float=True)
-        # Manually set a smaller visual step if needed, but config step 100 is good for large p1
         proc_layout.addWidget(self.p1_slider)
         self.p1_slider.valueChanged.connect(self.request_processing_update)
         
         proc_group.setLayout(proc_layout)
-        left_layout.addWidget(proc_group)
+        proc_tab_layout.addWidget(proc_group)
         
         # 1.5 Peak Detection Settings
         peak_group = QGroupBox("Peak Detection")
@@ -582,11 +588,11 @@ class MainWindow(QMainWindow):
         peak_layout.addWidget(self.peak_thr)
         self.peak_thr.valueChanged.connect(self.plot_spectrum_traffic_light)
 
-        self.freq_min_search = SliderSpinBox("Search Freq Min (Hz)", *self._unpack(r['search_freq_min']), is_float=True)
+        self.freq_min_search = SliderSpinBox("Search Freq Min", *self._unpack(r['search_freq_min']), is_float=True)
         peak_layout.addWidget(self.freq_min_search)
         self.freq_min_search.valueChanged.connect(self.plot_spectrum_traffic_light)
 
-        self.freq_max_search = SliderSpinBox("Search Freq Max (Hz)", *self._unpack(r['search_freq_max']), is_float=True)
+        self.freq_max_search = SliderSpinBox("Search Freq Max", *self._unpack(r['search_freq_max']), is_float=True)
         peak_layout.addWidget(self.freq_max_search)
         self.freq_max_search.valueChanged.connect(self.plot_spectrum_traffic_light)
         
@@ -596,46 +602,40 @@ class MainWindow(QMainWindow):
         # Noise Method
         noise_method_layout = QHBoxLayout()
         noise_method_layout.addWidget(QLabel("Noise Method:"))
-        
         self.combo_noise_method = QComboBox()
         self.combo_noise_method.addItems(["Global Region", "Local Window"])
         self.combo_noise_method.currentTextChanged.connect(self.update_noise_ui_visibility)
         noise_method_layout.addWidget(self.combo_noise_method)
         peak_layout.addLayout(noise_method_layout)
 
-        # Global Region Controls
+        # Global Region
         self.noise_global_group = QWidget()
         n_glob_l = QVBoxLayout(self.noise_global_group)
         n_glob_l.setContentsMargins(0,0,0,0)
-        
-        self.noise_min = SliderSpinBox("Noise Freq Min (Hz)", *self._unpack(r['noise_freq_min']), is_float=True)
+        self.noise_min = SliderSpinBox("Noise Min (Hz)", *self._unpack(r['noise_freq_min']), is_float=True)
         self.noise_min.valueChanged.connect(self.plot_spectrum_traffic_light)
         n_glob_l.addWidget(self.noise_min)
 
-        self.noise_max = SliderSpinBox("Noise Freq Max (Hz)", *self._unpack(r['noise_freq_max']), is_float=True)
+        self.noise_max = SliderSpinBox("Noise Max (Hz)", *self._unpack(r['noise_freq_max']), is_float=True)
         self.noise_max.valueChanged.connect(self.plot_spectrum_traffic_light)
         n_glob_l.addWidget(self.noise_max)
-        
         peak_layout.addWidget(self.noise_global_group)
 
-        # Local Window Controls
+        # Local Window
         self.noise_local_group = QWidget()
         n_loc_l = QVBoxLayout(self.noise_local_group)
         n_loc_l.setContentsMargins(0,0,0,0)
-        
-        self.noise_local_win = SliderSpinBox("Local Window (pts)", *self._unpack(r['local_noise_window']))
+        self.noise_local_win = SliderSpinBox("Local Window", *self._unpack(r['local_noise_window']))
         n_loc_l.addWidget(self.noise_local_win)
-        
         peak_layout.addWidget(self.noise_local_group)
         self.noise_local_group.setVisible(False)
 
         peak_group.setLayout(peak_layout)
-        left_layout.addWidget(peak_group)
-        
+        proc_tab_layout.addWidget(peak_group)
+
         # 2. Validation Thresholds
         val_group = QGroupBox("Decision Thresholds")
         val_layout = QVBoxLayout()
-        
         self.thr_r2 = SliderSpinBox("Min R2 Score", *self._unpack(r['min_r2']), is_float=True)
         val_layout.addWidget(self.thr_r2)
         self.thr_r2.valueChanged.connect(self.update_verdicts)
@@ -643,19 +643,17 @@ class MainWindow(QMainWindow):
         self.thr_slope = SliderSpinBox("Min Slope", *self._unpack(r['min_slope']), is_float=True, decimals=3)
         val_layout.addWidget(self.thr_slope)
         self.thr_slope.valueChanged.connect(self.update_verdicts)
-        
         val_group.setLayout(val_layout)
-        left_layout.addWidget(val_group)
-        
-        # Action Buttons
-        workflow_group = QGroupBox("Analysis Workflow")
+        proc_tab_layout.addWidget(val_group)
+
+        # Workflow Actions
+        workflow_group = QGroupBox("Scanning Actions")
         workflow_layout = QVBoxLayout()
         
         self.btn_load = QPushButton("Load Data")
         self.btn_load.clicked.connect(self.run_loading)
         workflow_layout.addWidget(self.btn_load)
         
-        # Explicit Process button (in case SVD is heavy and auto-update is annoying)
         self.btn_reprocess = QPushButton("Refresh Processing")
         self.btn_reprocess.clicked.connect(self.run_processing)
         workflow_layout.addWidget(self.btn_reprocess)
@@ -667,136 +665,43 @@ class MainWindow(QMainWindow):
         workflow_layout.addWidget(self.btn_run)
         
         workflow_group.setLayout(workflow_layout)
-        left_layout.addWidget(workflow_group)
+        proc_tab_layout.addWidget(workflow_group)
         
-        self.progress_bar = QProgressBar()
-        left_layout.addWidget(self.progress_bar)
-        
-        left_layout.addStretch()
-        # main_layout.addWidget(left_panel) # Handled by Splitter/ScrollArea
-        
-        # --- Right Panel: Visualization ---
-        right_splitter = QSplitter(Qt.Vertical)
-        
-        # 0. Time Domain View (New)
-        self.fig_time = Figure(figsize=(8, 3))
-        self.canvas_time = FigureCanvas(self.fig_time)
-        self.ax_time = self.fig_time.add_subplot(111)
-        
-        time_container = QWidget()
-        time_layout = QVBoxLayout(time_container)
-        time_layout.addWidget(NavigationToolbar(self.canvas_time, time_container))
-        time_layout.addWidget(self.canvas_time)
-        
-        right_splitter.addWidget(time_container)
-        
-        # Top: Spectrum View
-        self.fig_spec = Figure(figsize=(8, 4))
-        # Use subplots_adjust to set safe margins initially, avoiding tight_layout instability
-        self.fig_spec.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.15)
-        self.canvas_spec = FigureCanvas(self.fig_spec)
-        self.ax_spec = self.fig_spec.add_subplot(111)
-        # Enable picking
-        self.canvas_spec.mpl_connect('pick_event', self.on_pick)
-        
-        spec_container = QWidget()
-        spec_layout = QVBoxLayout(spec_container)
-        spec_layout.addWidget(NavigationToolbar(self.canvas_spec, spec_container))
-        spec_layout.addWidget(self.canvas_spec)
-        
-        # Spectrum Controls (Range)
-        range_group = QGroupBox("View Control")
-        range_layout = QHBoxLayout()
-        range_layout.setContentsMargins(5, 5, 5, 5)
-        
-        range_layout.addWidget(QLabel("Freq Range (Hz):"))
-        
-        self.freq_min = QDoubleSpinBox()
-        self.freq_min.setRange(0, 1000)
-        self.freq_min.setValue(0)
-        self.freq_min.setSuffix(" Hz")
-        range_layout.addWidget(self.freq_min)
-        
-        range_layout.addWidget(QLabel("-"))
-        
-        self.freq_max = QDoubleSpinBox()
-        self.freq_max.setRange(0, 1000)
-        self.freq_max.setValue(100)
-        self.freq_max.setSuffix(" Hz")
-        range_layout.addWidget(self.freq_max)
-        
-        btn_update_range = QPushButton("Update")
-        btn_update_range.clicked.connect(self.plot_spectrum_traffic_light)
-        range_layout.addWidget(btn_update_range)
-        
-        range_group.setLayout(range_layout)
-        spec_layout.addWidget(range_group)
+        proc_tab_layout.addStretch()
+        self.tabs_control.addTab(self.tab_process, "Preprocessing")
 
-        # Spectrum View Mode (Real/Imag/Mag)
-        view_mode_group = QGroupBox("Spectral Component")
-        view_mode_layout = QHBoxLayout()
-        view_mode_layout.setContentsMargins(5, 5, 5, 5)
 
-        self.btn_view_mag = QPushButton("Magnitude")
-        self.btn_view_mag.setCheckable(True)
-        self.btn_view_mag.setChecked(True)
-        self.btn_view_mag.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_mag)
+        # === TAB 2: ANALYSIS ===
+        self.tab_analysis = QWidget()
+        ana_tab_layout = QVBoxLayout(self.tab_analysis)
+        ana_tab_layout.setContentsMargins(5, 5, 5, 5)
 
-        self.btn_view_real = QPushButton("Real")
-        self.btn_view_real.setCheckable(True)
-        self.btn_view_real.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_real)
-
-        self.btn_view_imag = QPushButton("Imaginary")
-        self.btn_view_imag.setCheckable(True)
-        self.btn_view_imag.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_imag)
-        
-        # Exclusive selection logic is manual or use QButtonGroup, simplistic here:
-        self.view_buttons = [self.btn_view_mag, self.btn_view_real, self.btn_view_imag]
-
-        self.chk_view_abs = QCheckBox("Show Abs")
-        self.chk_view_abs.setChecked(False)
-        self.chk_view_abs.stateChanged.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.chk_view_abs)
-
-        view_mode_group.setLayout(view_mode_layout)
-        spec_layout.addWidget(view_mode_group)
-
-        right_splitter.addWidget(spec_container)
-        
-        # Bottom: Evolution/Analysis View
-        evo_container = QWidget()
-        evo_layout = QVBoxLayout(evo_container)
-        
-        # Analysis Mode Selection
-        self.lbl_analysis_mode = QLabel("Analysis Mode:")
+        # Mode
+        mode_group = QGroupBox("Mode Selection")
+        mode_l = QVBoxLayout()
+        self.lbl_analysis_mode = QLabel("Analysis Task:")
         self.combo_analysis_mode = QComboBox()
         self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Relaxation Analysis (Amp vs t)", "Global T2* Map"])
         self.combo_analysis_mode.currentIndexChanged.connect(self.on_analysis_mode_changed)
-        
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(self.lbl_analysis_mode)
-        mode_layout.addWidget(self.combo_analysis_mode)
-        mode_layout.addStretch()
-        evo_layout.addLayout(mode_layout)
+        mode_l.addWidget(self.lbl_analysis_mode)
+        mode_l.addWidget(self.combo_analysis_mode)
+        mode_group.setLayout(mode_l)
+        ana_tab_layout.addWidget(mode_group)
 
-        # Relaxation Settings Group (Hidden by default)
-        self.relax_settings_widget = QWidget()
-        self.relax_settings_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        relax_layout = QHBoxLayout(self.relax_settings_widget)
-        relax_layout.setContentsMargins(0,0,0,0)
+        # Relaxation Params (Container)
+        self.relax_settings_widget = QGroupBox("Relaxation Parameters")
+        relax_layout = QVBoxLayout()
         
-        relax_layout.addWidget(QLabel("Unit:"))
+        unit_layout = QHBoxLayout()
+        unit_layout.addWidget(QLabel("Unit:"))
         self.combo_relax_unit = QComboBox()
         self.combo_relax_unit.addItems(["Time (ms)", "Points"])
         self.combo_relax_unit.currentTextChanged.connect(self.update_relax_ui_state)
-        relax_layout.addWidget(self.combo_relax_unit)
+        unit_layout.addWidget(self.combo_relax_unit)
+        relax_layout.addLayout(unit_layout)
 
         self.lbl_relax_start = QLabel("Start:")
         relax_layout.addWidget(self.lbl_relax_start)
-        
         self.spin_relax_start = QDoubleSpinBox()
         self.spin_relax_start.setRange(0, 500000) 
         self.spin_relax_start.setValue(0)
@@ -806,7 +711,6 @@ class MainWindow(QMainWindow):
         
         self.lbl_relax_end = QLabel("End:")
         relax_layout.addWidget(self.lbl_relax_end)
-        
         self.spin_relax_end = QDoubleSpinBox()
         self.spin_relax_end.setRange(0, 500000)
         self.spin_relax_end.setValue(500) 
@@ -814,82 +718,160 @@ class MainWindow(QMainWindow):
         self.spin_relax_end.setSuffix(" ms")
         relax_layout.addWidget(self.spin_relax_end)
         
-        relax_layout.addWidget(QLabel("Points:"))
+        pts_layout = QHBoxLayout()
+        pts_layout.addWidget(QLabel("Step Points:"))
         self.spin_relax_points = QSpinBox()
         self.spin_relax_points.setRange(10, 500)
         self.spin_relax_points.setValue(50)
         self.spin_relax_points.setSingleStep(10)
-        relax_layout.addWidget(self.spin_relax_points)
+        pts_layout.addWidget(self.spin_relax_points)
+        relax_layout.addLayout(pts_layout)
         
-        # Zero-Fill Checkbox
         self.chk_relax_zerofill = QCheckBox("Zero-Fill Front")
-        self.chk_relax_zerofill.setToolTip("If checked, truncated points are replaced by zeros (maintain phase).\nIf unchecked, signal is shifted to start (standard).")
+        self.chk_relax_zerofill.setToolTip("Truncated points renamed to zero")
         relax_layout.addWidget(self.chk_relax_zerofill)
 
-        # Log T2* Checkbox
-        self.chk_log_t2 = QCheckBox("Log T2*")
-        self.chk_log_t2.setToolTip("Plot T2* on logarithmic scale")
+        self.chk_log_t2 = QCheckBox("Log T2* View")
+        self.chk_log_t2.setToolTip("View Output as Log Scale")
         self.chk_log_t2.stateChanged.connect(self.plot_global_results)
         relax_layout.addWidget(self.chk_log_t2)
 
-        # Batch Run Button
-        self.btn_batch_run = QPushButton("Run Global Map")
-        self.btn_batch_run.setToolTip("Analyze T2* for all detected peaks")
+        self.btn_batch_run = QPushButton("Run Global Map Analysis")
+        self.btn_batch_run.setStyleSheet("background-color: #2196F3; color: white;")
+        self.btn_batch_run.setToolTip("Calculate T2* for all detected peaks")
         self.btn_batch_run.clicked.connect(self.run_batch_analysis)
         relax_layout.addWidget(self.btn_batch_run)
         
-        relax_layout.addStretch()
+        self.relax_settings_widget.setLayout(relax_layout)
+        ana_tab_layout.addWidget(self.relax_settings_widget)
         
-        evo_layout.addWidget(self.relax_settings_widget)
+        # Initially hide relax settings (if default is Evolution)
         self.relax_settings_widget.setVisible(False)
-
-        evo_layout.addWidget(QLabel("Click a signal peak in the spectrum above to analyze."))
         
-        # Plot Area with Splitter
+        ana_tab_layout.addStretch()
+        self.tabs_control.addTab(self.tab_analysis, "Analysis")
+        
+        # --- Bottom Left Status ---
+        self.progress_bar = QProgressBar()
+        left_layout.addWidget(self.progress_bar)
+        
+        # --- Right Panel: Visualization ---
+        right_splitter = QSplitter(Qt.Vertical)
+        
+        # 0. Time Domain
+        self.fig_time = Figure(figsize=(8, 3))
+        self.canvas_time = FigureCanvas(self.fig_time)
+        self.ax_time = self.fig_time.add_subplot(111)
+        
+        time_container = QWidget()
+        time_layout = QVBoxLayout(time_container)
+        time_layout.addWidget(NavigationToolbar(self.canvas_time, time_container))
+        time_layout.addWidget(self.canvas_time)
+        right_splitter.addWidget(time_container)
+        
+        # Top: Spectrum
+        self.fig_spec = Figure(figsize=(8, 4))
+        self.fig_spec.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.15)
+        self.canvas_spec = FigureCanvas(self.fig_spec)
+        self.ax_spec = self.fig_spec.add_subplot(111)
+        self.canvas_spec.mpl_connect('pick_event', self.on_pick)
+        
+        spec_container = QWidget()
+        spec_layout = QVBoxLayout(spec_container)
+        spec_layout.addWidget(NavigationToolbar(self.canvas_spec, spec_container))
+        spec_layout.addWidget(self.canvas_spec)
+        
+        # Spectrum Controls area
+        range_group = QGroupBox("View Control")
+        range_layout = QHBoxLayout()
+        range_layout.setContentsMargins(5, 5, 5, 5)
+        range_layout.addWidget(QLabel("Range (Hz):"))
+        self.freq_min = QDoubleSpinBox()
+        self.freq_min.setRange(0, 5000)
+        self.freq_min.setValue(0)
+        range_layout.addWidget(self.freq_min)
+        range_layout.addWidget(QLabel("-"))
+        self.freq_max = QDoubleSpinBox()
+        self.freq_max.setRange(0, 5000)
+        self.freq_max.setValue(100)
+        range_layout.addWidget(self.freq_max)
+        btn_update_range = QPushButton("Set")
+        btn_update_range.clicked.connect(self.plot_spectrum_traffic_light)
+        range_layout.addWidget(btn_update_range)
+        range_group.setLayout(range_layout)
+        spec_layout.addWidget(range_group)
+
+        # View Mode
+        view_mode_group = QGroupBox("Component")
+        view_mode_layout = QHBoxLayout()
+        view_mode_layout.setContentsMargins(5, 5, 5, 5)
+        self.btn_view_mag = QPushButton("Mag")
+        self.btn_view_mag.setCheckable(True)
+        self.btn_view_mag.setChecked(True)
+        self.btn_view_mag.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_mag)
+        self.btn_view_real = QPushButton("Real")
+        self.btn_view_real.setCheckable(True)
+        self.btn_view_real.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_real)
+        self.btn_view_imag = QPushButton("Imag")
+        self.btn_view_imag.setCheckable(True)
+        self.btn_view_imag.clicked.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.btn_view_imag)
+        self.view_buttons = [self.btn_view_mag, self.btn_view_real, self.btn_view_imag]
+        self.chk_view_abs = QCheckBox("Abs")
+        self.chk_view_abs.setChecked(False)
+        self.chk_view_abs.stateChanged.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.chk_view_abs)
+        view_mode_group.setLayout(view_mode_layout)
+        spec_layout.addWidget(view_mode_group)
+
+        right_splitter.addWidget(spec_container)
+        
+        # Bottom: Evolution/Analysis Plots
+        evo_container = QWidget()
+        evo_layout = QVBoxLayout(evo_container)
+        
+        # Only Instruction Label here now
+        evo_layout.addWidget(QLabel("Analysis Results:"))
+        
+        # Plot Area
         self.ana_splitter = QSplitter(Qt.Horizontal)
         
-        # Plot 1: Main (Evolution / Single Peak / Global Scatter)
+        # Plot 1
         self.plot_container_1 = QWidget()
         l_1 = QVBoxLayout(self.plot_container_1)
         l_1.setContentsMargins(0,0,0,0)
-        
         self.fig_evo = Figure(figsize=(5, 3))
         self.canvas_evo = FigureCanvas(self.fig_evo)
         self.ax_evo = self.fig_evo.add_subplot(111)
         self.canvas_evo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
         self.toolbar_evo = NavigationToolbar(self.canvas_evo, self.plot_container_1)
         l_1.addWidget(self.toolbar_evo)
         l_1.addWidget(self.canvas_evo)
         
-        # Plot 2: Detail (Decay Curve)
+        # Plot 2
         self.plot_container_2 = QWidget()
         l_2 = QVBoxLayout(self.plot_container_2)
         l_2.setContentsMargins(0,0,0,0)
-        
         self.fig_detail = Figure(figsize=(5, 3))
         self.canvas_detail = FigureCanvas(self.fig_detail)
         self.ax_detail = self.fig_detail.add_subplot(111)
         self.canvas_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
         self.toolbar_detail = NavigationToolbar(self.canvas_detail, self.plot_container_2)
         l_2.addWidget(self.toolbar_detail)
         l_2.addWidget(self.canvas_detail)
 
         self.ana_splitter.addWidget(self.plot_container_1)
         self.ana_splitter.addWidget(self.plot_container_2)
-        
-        # Initially hide the second plot
         self.plot_container_2.hide()
 
         evo_layout.addWidget(self.ana_splitter, stretch=1)
         right_splitter.addWidget(evo_container)
         
         self.main_splitter.addWidget(right_splitter)
-        
-        # Splitter config
-        self.main_splitter.setStretchFactor(0, 0) # Left panel fixed-ish
-        self.main_splitter.setStretchFactor(1, 1) # Right panel expands
+        self.main_splitter.setStretchFactor(0, 0) 
+        self.main_splitter.setStretchFactor(1, 1)
 
     def add_folders(self):
         # We allow multiple dirs. Qt QFileDialog.getExistingDirectory only does one.
