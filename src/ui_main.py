@@ -826,6 +826,12 @@ class MainWindow(QMainWindow):
         self.chk_relax_zerofill.setToolTip("If checked, truncated points are replaced by zeros (maintain phase).\nIf unchecked, signal is shifted to start (standard).")
         relax_layout.addWidget(self.chk_relax_zerofill)
 
+        # Log T2* Checkbox
+        self.chk_log_t2 = QCheckBox("Log T2*")
+        self.chk_log_t2.setToolTip("Plot T2* on logarithmic scale")
+        self.chk_log_t2.stateChanged.connect(self.plot_global_results)
+        relax_layout.addWidget(self.chk_log_t2)
+
         # Batch Run Button
         self.btn_batch_run = QPushButton("Run Global Map")
         self.btn_batch_run.setToolTip("Analyze T2* for all detected peaks")
@@ -1098,7 +1104,9 @@ class MainWindow(QMainWindow):
             self.plot_container_2.setVisible(is_global)
 
         # 4. Reset Plots
-        self.ax_evo.clear()
+        self.fig_evo.clear()
+        self.ax_evo = self.fig_evo.add_subplot(111)
+        
         if is_global:
             self.ax_evo.text(0.5, 0.5, "Click 'Run Global Map' to start", ha='center', va='center')
             self.ax_detail.clear()
@@ -1323,39 +1331,48 @@ class MainWindow(QMainWindow):
         pos_data = plot_data[pos_mask]
         
         # Guard against empty or singular data (prevents Singular Matrix error in axvspan)
-        if len(pos_freqs) < 2:
+        if len(pos_freqs) < 2 or np.ptp(pos_freqs) == 0:
             self.canvas_spec.draw()
             return
 
         self.ax_spec.plot(pos_freqs, pos_data, 'k-', linewidth=0.8, alpha=0.6, label=f'Spectrum ({mode_label})')
         
         # --- Visualization of Detection Params ---
-        # 1. Amplitude Threshold
-        thr_val = self.peak_thr.value()
-        self.ax_spec.axhline(y=thr_val, color='#FFA500', linestyle='--', linewidth=1, alpha=0.7, label='Height Threshold')
-        
-        # 2. Search Window
-        f_min = self.freq_min_search.value()
-        f_max = self.freq_max_search.value()
-        
-        # Highlight the VALID search region (or grey out the ignored)
-        # Greying out outside is clearer
-        # Left side
-        self.ax_spec.axvspan(0, f_min, color='gray', alpha=0.1)
-        # Right side
-        self.ax_spec.axvspan(f_max, np.max(pos_freqs) if len(pos_freqs)>0 else 1000, color='gray', alpha=0.1, label='Ignored Region')
-        
-        # Add vertical lines for bounds
-        self.ax_spec.axvline(x=f_min, color='gray', linestyle=':', alpha=0.5)
-        self.ax_spec.axvline(x=f_max, color='gray', linestyle=':', alpha=0.5)
+        # Wrap decorations in try-except to handle singular matrix errors during layout transitions
+        try:
+            # 1. Amplitude Threshold
+            thr_val = self.peak_thr.value()
+            self.ax_spec.axhline(y=thr_val, color='#FFA500', linestyle='--', linewidth=1, alpha=0.7, label='Height Threshold')
+            
+            # 2. Search Window
+            f_min = self.freq_min_search.value()
+            f_max = self.freq_max_search.value()
+            
+            # Highlight the VALID search region (or grey out the ignored)
+            # Greying out outside is clearer
+            # Left side
+            if f_min > 0:
+                self.ax_spec.axvspan(0, f_min, color='gray', alpha=0.1)
+            # Right side
+            current_max_freq = np.max(pos_freqs)
+            if f_max < current_max_freq:
+                self.ax_spec.axvspan(f_max, current_max_freq, color='gray', alpha=0.1, label='Ignored Region')
+            
+            # Add vertical lines for bounds
+            self.ax_spec.axvline(x=f_min, color='gray', linestyle=':', alpha=0.5)
+            self.ax_spec.axvline(x=f_max, color='gray', linestyle=':', alpha=0.5)
 
-        # 3. Noise Region
-        if self.combo_noise_method.currentText() == "Global Region":
-            n_min = self.noise_min.value()
-            n_max = self.noise_max.value()
-            # Red semi-transparent area for noise
-            self.ax_spec.axvspan(n_min, n_max, color='red', alpha=0.05, label='Noise Calc Region')
-            self.ax_spec.text((n_min+n_max)/2, thr_val*1.1, "Noise", color='red', fontsize=8, ha='center')
+            # 3. Noise Region
+            if self.combo_noise_method.currentText() == "Global Region":
+                n_min = self.noise_min.value()
+                n_max = self.noise_max.value()
+                # Red semi-transparent area for noise
+                self.ax_spec.axvspan(n_min, n_max, color='red', alpha=0.05, label='Noise Calc Region')
+                self.ax_spec.text((n_min+n_max)/2, thr_val*1.1, "Noise", color='red', fontsize=8, ha='center')
+        except Exception as e:
+            print(f"Warning: Could not draw spectrum decorations: {e}")
+
+        # Plot Candidates (Overlaid on the selected view)
 
         # Plot Candidates (Overlaid on the selected view)
         # Note: Peak picking is usually done on Magnitude, so the Y-positions might need adjustment if viewing Real.
@@ -1625,7 +1642,11 @@ class MainWindow(QMainWindow):
         self.plot_global_results()
         
     def plot_global_results(self):
-        self.ax_evo.clear()
+        # Reset figure layout to prevent colorbar shrinking
+        self.fig_evo.clear()
+        self.ax_evo = self.fig_evo.add_subplot(111)
+        self.cbar_evo = None # Reset ref
+        
         self.ax_detail.clear() # Clear detail too
         
         df = self.batch_results_summary
@@ -1636,16 +1657,17 @@ class MainWindow(QMainWindow):
              
         # Scatter Freq vs T2*
         # Use simple scatter with picker=5
-        sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_ms'], c=df['R2'], cmap='viridis', picker=5, s=40, edgecolors='k')
+        sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_ms'], c=df['R2'], cmap='viridis', picker=5, s=40, edgecolors='k')
         self.ax_evo.set_xlabel('Frequency (Hz)')
         self.ax_evo.set_ylabel('T2* (ms)')
         self.ax_evo.set_title(f"Global T2* Map (n={len(df)})")
         self.ax_evo.grid(True, alpha=0.3)
         
-        # Colorbar - trick to manage it
-        if hasattr(self, 'cbar_evo'):
-            try: self.cbar_evo.remove()
-            except: pass
+        # Log Scale Option
+        if hasattr(self, 'chk_log_t2') and self.chk_log_t2.isChecked():
+            self.ax_evo.set_yscale('log')
+
+        # Colorbar - use constrained layout or just add it to refreshed figure
         self.cbar_evo = self.fig_evo.colorbar(sc, ax=self.ax_evo, label='Fit R2')
         
         self.canvas_evo.draw()
@@ -1674,13 +1696,15 @@ class MainWindow(QMainWindow):
         self.ax_detail.clear()
         
         times = data['times'] * 1000 # to ms
-        amps = data['amplitudes']
-        fit = data['fit']
-        popt = data['popt']
-        r2 = data['r2']
+        amps = data['amps']
         
         self.ax_detail.plot(times, amps, 'bo', label='Data')
-        self.ax_detail.plot(times, fit, 'r-', label=f'Fit (T2*={popt[1]*1000:.1f}ms)')
+        
+        if len(data['fit_x']) > 0:
+             fit_x_ms = data['fit_x'] * 1000
+             fit_y = data['fit_y']
+             t2 = data['t2']
+             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', label=f'Fit (T2*={t2*1000:.1f}ms)')
         
         self.ax_detail.set_xlabel('Delay (ms)')
         self.ax_detail.set_ylabel('Amplitude')

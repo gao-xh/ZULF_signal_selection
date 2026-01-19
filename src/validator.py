@@ -123,77 +123,84 @@ class SignalValidator:
         
         # 4. Back-Tracing / Stream Processing
         print("Starting Back-Tracing Evolution Loop...")
-        for n, fid in self.loader.stream_process(checkpoints):
-            # Process with LOCKED parameters
-            _, spec = self.processor.process_fid(fid, processing_params, self.loader.sampling_rate)
-            
-            if detect_mode == 'real':
-                iter_data = np.real(spec)
-            elif detect_mode == 'imag':
-                iter_data = np.imag(spec)
-            else:
-                iter_data = np.abs(spec)
-            
-            # Use abs for consistency in intensity measurement
-            iter_data = np.abs(iter_data)
-
-            # --- Noise Calculation Strategy ---
-            global_noise_lvl = 1.0
-            
-            if noise_method == 'global':
-                # Global Region Strategy
-                noise_mask_full = (freqs >= noise_f_min) & (freqs <= noise_f_max)
-                noise_region_data = iter_data[noise_mask_full]
+        try:
+            for n, fid in self.loader.stream_process(checkpoints):
+                # Process with LOCKED parameters
+                _, spec = self.processor.process_fid(fid, processing_params, self.loader.sampling_rate)
                 
-                if len(noise_region_data) > 0:
-                    global_noise_lvl = np.std(noise_region_data)
+                if detect_mode == 'real':
+                    iter_data = np.real(spec)
+                elif detect_mode == 'imag':
+                    iter_data = np.imag(spec)
                 else:
-                    global_noise_lvl = 1.0 
+                    iter_data = np.abs(spec)
+                
+                # Use abs for consistency in intensity measurement
+                iter_data = np.abs(iter_data)
 
-            for idx in candidate_indices:
-                # Local Window Search Strategy (Anti-Drift)
-                # Search +/- peak_window points
-                start = max(0, idx - peak_window)
-                end = min(len(iter_data), idx + peak_window + 1)
-                window_slice = iter_data[start:end]
+                # --- Noise Calculation Strategy ---
+                global_noise_lvl = 1.0
                 
-                # Metric: Max Intensity in Window
-                intensity = np.max(window_slice)
-                
-                # Determine Noise Level for this peak
                 if noise_method == 'global':
-                    noise_lvl = global_noise_lvl
-                else:
-                    # Local Window Strategy
-                    # Use user-defined local window size
-                    noise_w = int(noise_local_win)
+                    # Global Region Strategy
+                    noise_mask_full = (freqs >= noise_f_min) & (freqs <= noise_f_max)
+                    noise_region_data = iter_data[noise_mask_full]
                     
-                    noise_window_start = max(0, idx - noise_w)
-                    noise_window_end = min(len(iter_data), idx + noise_w)
-                    
-                    # Exclude the peak region itself
-                    mask = np.ones(noise_window_end - noise_window_start, dtype=bool)
-                    # Mask out center (peak_window * 2) 
-                    center_local = idx - noise_window_start
-                    mask_start = max(0, center_local - peak_window*2)
-                    mask_end = min(len(mask), center_local + peak_window*2)
-                    mask[mask_start:mask_end] = False
-                    
-                    noise_region = iter_data[noise_window_start:noise_window_end][mask]
-                    
-                    if len(noise_region) > 0:
-                        noise_lvl = np.std(noise_region)
+                    if len(noise_region_data) > 0:
+                        global_noise_lvl = np.std(noise_region_data)
                     else:
-                        noise_lvl = 1.0 
+                        global_noise_lvl = 1.0 
+
+                for idx in candidate_indices:
+                    # Local Window Search Strategy (Anti-Drift)
+                    # Search +/- peak_window points
+                    start = max(0, idx - peak_window)
+                    end = min(len(iter_data), idx + peak_window + 1)
+                    window_slice = iter_data[start:end]
                     
-                snr = intensity / noise_lvl if noise_lvl > 0 else 0
-                
-                # Record
-                self.evolution_data[idx]['N'].append(n)
-                self.evolution_data[idx]['sqrt_N'].append(np.sqrt(n))
-                self.evolution_data[idx]['Intensity'].append(intensity)
-                self.evolution_data[idx]['Noise'].append(noise_lvl)
-                self.evolution_data[idx]['SNR'].append(snr)
+                    # Metric: Max Intensity in Window
+                    intensity = np.max(window_slice)
+                    
+                    # Determine Noise Level for this peak
+                    if noise_method == 'global':
+                        noise_lvl = global_noise_lvl
+                    else:
+                        # Local Window Strategy
+                        # Use user-defined local window size
+                        noise_w = int(noise_local_win)
+                        
+                        noise_window_start = max(0, idx - noise_w)
+                        noise_window_end = min(len(iter_data), idx + noise_w)
+                        
+                        # Exclude the peak region itself
+                        mask = np.ones(noise_window_end - noise_window_start, dtype=bool)
+                        # Mask out center (peak_window * 2) 
+                        center_local = idx - noise_window_start
+                        mask_start = max(0, center_local - peak_window*2)
+                        mask_end = min(len(mask), center_local + peak_window*2)
+                        mask[mask_start:mask_end] = False
+                        
+                        noise_region = iter_data[noise_window_start:noise_window_end][mask]
+                        
+                        if len(noise_region) > 0:
+                            noise_lvl = np.std(noise_region)
+                        else:
+                            noise_lvl = 1.0 
+                        
+                    snr = intensity / noise_lvl if noise_lvl > 0 else 0
+                    
+                    # Record
+                    self.evolution_data[idx]['N'].append(n)
+                    self.evolution_data[idx]['sqrt_N'].append(np.sqrt(n))
+                    self.evolution_data[idx]['Intensity'].append(intensity)
+                    self.evolution_data[idx]['Noise'].append(noise_lvl)
+                    self.evolution_data[idx]['SNR'].append(snr)
+        except Exception as e:
+            print(f"Error in Back-Tracing Loop: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+
 
         # 5. Regression Analysis
         summary = []
