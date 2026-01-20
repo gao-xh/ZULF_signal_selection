@@ -13,3 +13,7 @@
 - **Target Behavior**: 
     - Expose a `Search Width (Hz)` parameter.
     - Dynamically calculate points based on spectral resolution: `search_points = int(search_width_hz / (spectral_width / n_points))`.
+
+## 3. UI Updates (Next Session)
+- **Analysis Tab**: Add `Tracking Window (Hz)` Slider/SpinBox to the Global Map settings group.
+- **Backend**: Update `BatchRelaxationWorker` to accept this new parameter and implement the stateful tracking loop.

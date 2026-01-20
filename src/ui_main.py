@@ -510,6 +510,8 @@ class MainWindow(QMainWindow):
         # 0. Data Selection (Common)
         folder_group = QGroupBox("Data Selection")
         folder_layout = QVBoxLayout()
+        folder_layout.setContentsMargins(5, 5, 5, 5) # Compact margins
+        
         self.folder_list = QListWidget()
         self.folder_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.folder_list.setFixedHeight(80)
@@ -530,6 +532,8 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(self.btn_load)
 
         folder_group.setLayout(folder_layout)
+        # Prevent it from expanding vertically
+        folder_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         left_layout.addWidget(folder_group)
         
         # --- Tab ToolBox ---
