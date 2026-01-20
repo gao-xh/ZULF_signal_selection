@@ -524,6 +524,11 @@ class MainWindow(QMainWindow):
         self.btn_clear_folders.clicked.connect(self.clear_folders)
         btn_layout.addWidget(self.btn_clear_folders)
         folder_layout.addLayout(btn_layout)
+
+        self.btn_load = QPushButton("Load Data")
+        self.btn_load.clicked.connect(self.run_loading)
+        folder_layout.addWidget(self.btn_load)
+
         folder_group.setLayout(folder_layout)
         left_layout.addWidget(folder_group)
         
@@ -536,17 +541,18 @@ class MainWindow(QMainWindow):
         proc_tab_layout = QVBoxLayout(self.tab_process)
         proc_tab_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 1. Processing Parameters
+        # Signal Processing Params
         r = UI_PARAM_RANGES
-        proc_group = QGroupBox("Signal Processing")
+        proc_group = QGroupBox("Signal Parameters")
         proc_layout = QVBoxLayout()
         
-        # SVD Checkbox
+        # SVD
         self.chk_svd = QCheckBox("Enable SVD Denoising")
         self.chk_svd.setToolTip("Enable Singular Value Decomposition")
         proc_layout.addWidget(self.chk_svd)
         self.chk_svd.stateChanged.connect(self.request_processing_update)
 
+        # Savgol
         self.savgol_window = SliderSpinBox("Savgol Window", *self._unpack(r['savgol_window']))
         proc_layout.addWidget(self.savgol_window)
         self.savgol_window.valueChanged.connect(self.request_processing_update)
@@ -555,11 +561,11 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.savgol_order)
         self.savgol_order.valueChanged.connect(self.request_processing_update)
         
+        # Apod & Trunc
         self.apod_rate = SliderSpinBox("Apod T2* (s)", *self._unpack(r['apod_t2star']), is_float=True, decimals=3)
         proc_layout.addWidget(self.apod_rate)
         self.apod_rate.valueChanged.connect(self.request_processing_update)
 
-        # Truncation
         self.trunc_slider = SliderSpinBox("Trunc Start (pts)", *self._unpack(r['trunc_start']))
         proc_layout.addWidget(self.trunc_slider)
         self.trunc_slider.valueChanged.connect(self.request_processing_update)
@@ -568,7 +574,7 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.trunc_end_slider)
         self.trunc_end_slider.valueChanged.connect(self.request_processing_update)
 
-        # Fixed Phase
+        # Phase
         self.p0_slider = SliderSpinBox("Phase 0 (deg)", *self._unpack(r['phase_0']), is_float=True)
         proc_layout.addWidget(self.p0_slider)
         self.p0_slider.valueChanged.connect(self.request_processing_update)
@@ -580,7 +586,21 @@ class MainWindow(QMainWindow):
         proc_group.setLayout(proc_layout)
         proc_tab_layout.addWidget(proc_group)
         
-        # 1.5 Peak Detection Settings
+        # Bottom Button
+        self.btn_reprocess = QPushButton("Refresh Processing")
+        self.btn_reprocess.clicked.connect(self.run_processing)
+        proc_tab_layout.addWidget(self.btn_reprocess)
+        proc_tab_layout.addStretch()
+        
+        self.tabs_control.addTab(self.tab_process, "Processing")
+
+
+        # === TAB 2: DETECTION ===
+        self.tab_detect = QWidget()
+        det_tab_layout = QVBoxLayout(self.tab_detect)
+        det_tab_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Peak Detection Settings
         peak_group = QGroupBox("Peak Detection")
         peak_layout = QVBoxLayout()
         
@@ -631,9 +651,9 @@ class MainWindow(QMainWindow):
         self.noise_local_group.setVisible(False)
 
         peak_group.setLayout(peak_layout)
-        proc_tab_layout.addWidget(peak_group)
+        det_tab_layout.addWidget(peak_group)
 
-        # 2. Validation Thresholds
+        # Decision Thresholds
         val_group = QGroupBox("Decision Thresholds")
         val_layout = QVBoxLayout()
         self.thr_r2 = SliderSpinBox("Min R2 Score", *self._unpack(r['min_r2']), is_float=True)
@@ -644,34 +664,20 @@ class MainWindow(QMainWindow):
         val_layout.addWidget(self.thr_slope)
         self.thr_slope.valueChanged.connect(self.update_verdicts)
         val_group.setLayout(val_layout)
-        proc_tab_layout.addWidget(val_group)
-
-        # Workflow Actions
-        workflow_group = QGroupBox("Scanning Actions")
-        workflow_layout = QVBoxLayout()
+        det_tab_layout.addWidget(val_group)
         
-        self.btn_load = QPushButton("Load Data")
-        self.btn_load.clicked.connect(self.run_loading)
-        workflow_layout.addWidget(self.btn_load)
-        
-        self.btn_reprocess = QPushButton("Refresh Processing")
-        self.btn_reprocess.clicked.connect(self.run_processing)
-        workflow_layout.addWidget(self.btn_reprocess)
-        
+        # Bottom Button
         self.btn_run = QPushButton("Run Progressive Analysis")
         self.btn_run.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         self.btn_run.clicked.connect(self.start_analysis)
         self.btn_run.setEnabled(False) 
-        workflow_layout.addWidget(self.btn_run)
+        det_tab_layout.addWidget(self.btn_run)
         
-        workflow_group.setLayout(workflow_layout)
-        proc_tab_layout.addWidget(workflow_group)
-        
-        proc_tab_layout.addStretch()
-        self.tabs_control.addTab(self.tab_process, "Preprocessing")
+        det_tab_layout.addStretch()
+        self.tabs_control.addTab(self.tab_detect, "Detection")
 
 
-        # === TAB 2: ANALYSIS ===
+        # === TAB 3: ANALYSIS ===
         self.tab_analysis = QWidget()
         ana_tab_layout = QVBoxLayout(self.tab_analysis)
         ana_tab_layout.setContentsMargins(5, 5, 5, 5)
