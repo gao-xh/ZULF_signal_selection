@@ -717,7 +717,7 @@ class MainWindow(QMainWindow):
         mode_l = QVBoxLayout()
         self.lbl_analysis_mode = QLabel("Analysis Task:")
         self.combo_analysis_mode = QComboBox()
-        self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Relaxation Analysis (Amp vs t)", "Global T2* Map"])
+        self.combo_analysis_mode.addItems(["Signal Evolution (SNR vs N)", "Dephasing Analysis (T2*)", "Global T2* Map"])
         self.combo_analysis_mode.currentIndexChanged.connect(self.on_analysis_mode_changed)
         mode_l.addWidget(self.lbl_analysis_mode)
         mode_l.addWidget(self.combo_analysis_mode)
@@ -725,7 +725,7 @@ class MainWindow(QMainWindow):
         ana_tab_layout.addWidget(mode_group)
 
         # Relaxation Params (Container)
-        self.relax_settings_widget = QGroupBox("Relaxation Parameters")
+        self.relax_settings_widget = QGroupBox("Dephasing Parameters (T2*)")
         relax_layout = QVBoxLayout()
         
         unit_layout = QHBoxLayout()
@@ -1189,14 +1189,16 @@ class MainWindow(QMainWindow):
     def on_analysis_mode_changed(self, index):
         mode_text = self.combo_analysis_mode.currentText()
         is_global = mode_text.startswith("Global")
-        is_relax = mode_text.startswith("Relaxation") or is_global
+        # Match 'Dephasing Analysis' or old 'Relaxation Analysis' for backward compat logic if needed
+        is_relax = mode_text.startswith("Relaxation") or mode_text.startswith("Dephasing") or is_global
 
         # 1. Manage Settings Visibility
         if hasattr(self, 'relax_settings_widget'):
             self.relax_settings_widget.setVisible(is_relax)
             
         if hasattr(self, 'adv_analysis_group'):
-            self.adv_analysis_group.setVisible(is_global)
+            # Show advanced analysis tools for BOTH Relaxation Analysis (Single) and Global Map
+            self.adv_analysis_group.setVisible(is_relax)
             
         # 2. Manage Batch Button Visibility
         if hasattr(self, 'btn_batch_run'):
@@ -1566,7 +1568,8 @@ class MainWindow(QMainWindow):
         
         # If reasonably close (e.g. 1Hz)
         if closest_row['dist'] < 5.0:
-            if self.combo_analysis_mode.currentText().startswith("Relaxation"):
+            current_mode = self.combo_analysis_mode.currentText()
+            if current_mode.startswith("Relaxation") or current_mode.startswith("Dephasing"):
                 self.run_relaxation_analysis(closest_row['Freq_Hz'])
             else:
                 self.plot_evolution(closest_row['Index'])
@@ -1576,7 +1579,7 @@ class MainWindow(QMainWindow):
             return
             
         self.ax_evo.clear()
-        self.ax_evo.text(0.5, 0.5, "Calculating Relaxation...", ha='center', va='center')
+        self.ax_evo.text(0.5, 0.5, "Calculating Dephasing...", ha='center', va='center')
         self.canvas_evo.draw()
         
         params = self._get_process_params()
@@ -1625,7 +1628,7 @@ class MainWindow(QMainWindow):
 
     def plot_relaxation_results(self, times, amps, fit_x, fit_y, t2, r2):
         self.progress_bar.setValue(100)
-        self.statusBar().showMessage("Relaxation Analysis Complete")
+        self.statusBar().showMessage("Dephasing Analysis Complete")
         self.ax_evo.clear()
         
         # Save state for advanced analysis
@@ -1647,7 +1650,7 @@ class MainWindow(QMainWindow):
             
         self.ax_evo.set_xlabel("Truncation Start Time (s)")
         self.ax_evo.set_ylabel("Peak Amplitude")
-        self.ax_evo.set_title(f"Relaxation Analysis (R2={r2:.3f})")
+        self.ax_evo.set_title(f"Dephasing Analysis (R2={r2:.3f})")
         self.ax_evo.legend()
         
         try:
