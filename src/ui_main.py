@@ -798,6 +798,33 @@ class MainWindow(QMainWindow):
         self.relax_settings_widget.setLayout(relax_layout)
         ana_tab_layout.addWidget(self.relax_settings_widget)
         
+        # --- Advanced Analysis Group (New) ---
+        self.adv_analysis_group = QGroupBox("Advanced Decay Analysis")
+        adv_layout = QVBoxLayout()
+        
+        hbox_adv = QHBoxLayout()
+        self.btn_fit_envelope = QPushButton("Fit Peak Envelope")
+        self.btn_fit_envelope.setToolTip("Fit T2* using only localized peaks (ignoring beat valleys)")
+        self.btn_fit_envelope.clicked.connect(self.run_envelope_fit)
+        
+        self.btn_fit_cosine = QPushButton("Fit J-Coupling")
+        self.btn_fit_cosine.setToolTip("Fit Damped Cosine to extract Beat Frequency (J)")
+        self.btn_fit_cosine.clicked.connect(self.run_cosine_fit)
+        
+        hbox_adv.addWidget(self.btn_fit_envelope)
+        hbox_adv.addWidget(self.btn_fit_cosine)
+        adv_layout.addLayout(hbox_adv)
+        
+        self.lbl_adv_result = QLabel("Result: (Select a point in the Global Map)")
+        self.lbl_adv_result.setStyleSheet("color: #333; font-weight: bold;")
+        self.lbl_adv_result.setWordWrap(True)
+        adv_layout.addWidget(self.lbl_adv_result)
+        
+        self.adv_analysis_group.setLayout(adv_layout)
+        ana_tab_layout.addWidget(self.adv_analysis_group)
+        self.adv_analysis_group.setVisible(False) # Hidden by default
+        # -------------------------------------
+        
         # Initially hide relax settings (if default is Evolution)
         self.relax_settings_widget.setVisible(False)
         
@@ -1167,6 +1194,9 @@ class MainWindow(QMainWindow):
         # 1. Manage Settings Visibility
         if hasattr(self, 'relax_settings_widget'):
             self.relax_settings_widget.setVisible(is_relax)
+            
+        if hasattr(self, 'adv_analysis_group'):
+            self.adv_analysis_group.setVisible(is_global)
             
         # 2. Manage Batch Button Visibility
         if hasattr(self, 'btn_batch_run'):
@@ -1598,6 +1628,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Relaxation Analysis Complete")
         self.ax_evo.clear()
         
+        # Save state for advanced analysis
+        self.current_decay_data = {
+            'times': np.array(times),
+            'amps': np.array(amps),
+            'ax': self.ax_evo,
+            'canvas': self.canvas_evo
+        }
+        if hasattr(self, 'lbl_adv_result'):
+            self.lbl_adv_result.setText("Analysis Ready")
+        
         # Plot Data
         self.ax_evo.scatter(times, amps, c='b', alpha=0.6, label='Truncation Amp')
         
@@ -1790,30 +1830,177 @@ class MainWindow(QMainWindow):
             self.plot_detail_curve(freq)
             
     def plot_detail_curve(self, freq):
+        self.current_detail_freq = freq # Cache for reference
+        
         # Retrieve detail data
         data = self.batch_results_details.get(freq)
         if not data: return
         
         self.ax_detail.clear()
         
-        times = data['times'] * 1000 # to ms
-        amps = data['amps']
+        times = np.array(data['times'])
+        amps = np.array(data['amps']) # Ensure numpy array
         
-        self.ax_detail.plot(times, amps, 'bo', label='Data')
+        # Save state for advanced analysis
+        self.current_decay_data = {
+            'times': times,
+            'amps': amps,
+            'ax': self.ax_detail,
+            'canvas': self.canvas_detail
+        }
+        
+        self.ax_detail.plot(times * 1000, amps, 'bo', label='Data', alpha=0.6)
         
         if len(data['fit_x']) > 0:
              fit_x_ms = data['fit_x'] * 1000
              fit_y = data['fit_y']
              t2 = data['t2']
-             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', label=f'Fit (T2*={t2*1000:.1f}ms)')
+             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', linewidth=2, label=f'Simple Fit ({t2*1000:.0f}ms)')
         
         self.ax_detail.set_xlabel('Delay (ms)')
         self.ax_detail.set_ylabel('Amplitude')
         self.ax_detail.set_title(f"Decay @ {freq:.1f} Hz")
         self.ax_detail.legend(fontsize='small')
-        self.ax_detail.grid(True)
+        self.ax_detail.grid(True, linestyle=":", alpha=0.7)
         
         self.canvas_detail.draw()
+        
+        # Reset result label
+        if hasattr(self, 'lbl_adv_result'):
+            self.lbl_adv_result.setText("Advanced Analysis: Ready")
+
+    def run_envelope_fit(self):
+        if not hasattr(self, 'current_decay_data') or self.current_decay_data is None:
+            QMessageBox.warning(self, "No Data", "Please run analysis or select a point first.")
+            return
+
+        from scipy.signal import find_peaks
+        from scipy.stats import linregress
+        
+        # Prevent duplicate overlays: Clear ONLY envelopes and fits, keep data.
+        # This is tricky without clearing the whole axes.
+        # Alternatively, we just clear the whole axes and replot base data.
+        ax.clear()
+        
+        # Replot Base Data (Blue Dots)
+        t_base = times * 1000 if ax == self.ax_detail else times
+        ax.scatter(t_base, amps, c='b', alpha=0.6, label='Truncation Amp')
+        
+        # Replot Simple Fit (Red Line) - need to re-generate it or store it?
+        # The simple fit was done in run/plot_detail_curve. 
+        # For simplicity, we can skip replotting the BAD simple fit if we are showing a GOOD envelope fit.
+        # Or we can recalculate it quickly.
+        # Let's simple plot the envelope fit as the "new" main result.
+        
+        ax.set_xlabel("Time (ms)" if ax == self.ax_detail else "Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.grid(True, linestyle=":", alpha=0.7)
+        
+        # Find peaks (Envelope)
+        # We assume the signal is oscillating, so we look for local maxima
+        peaks, _ = find_peaks(amps)
+        
+        if len(peaks) < 3:
+            self.lbl_adv_result.setText("Envelope Fit: Not enough peaks found.")
+            return
+            
+        t_peaks = times[peaks]
+        a_peaks = amps[peaks]
+        
+        # Log-Linear Fit
+        valid = a_peaks > 0
+        if np.sum(valid) < 3:
+             self.lbl_adv_result.setText("Envelope Fit: Peaks too low.")
+             return
+             
+        slope, intercept, r_val, _, _ = linregress(t_peaks[valid], np.log(a_peaks[valid]))
+        
+        if slope >= 0:
+            self.lbl_adv_result.setText("Envelope Fit: Signal is growing (Slope >= 0).")
+            return
+            
+        t2_env = -1.0 / slope
+        r2 = r_val**2
+        
+        # Plot
+        t_plot = np.linspace(min(times), max(times), 100)
+        y_plot = np.exp(intercept + slope * t_plot)
+        
+        ax.plot(t_plot * 1000 if ax == self.ax_detail else t_plot, 
+                y_plot, 'orange', linewidth=2, linestyle='--', label=f'Env T2*={t2_env*1000:.1f}ms')
+        
+        # Identify peaks on plot
+        t_peaks_plot = t_peaks * 1000 if ax == self.ax_detail else t_peaks
+        ax.plot(t_peaks_plot, a_peaks, 'rx', markersize=5) # Mark used peaks
+        
+        ax.legend(fontsize='small')
+        canvas.draw()
+        
+        self.lbl_adv_result.setText(f"Envelope T2*: {t2_env*1000:.1f} ms (R2={r2:.3f})")
+
+    def run_cosine_fit(self):
+        if not hasattr(self, 'current_decay_data') or self.current_decay_data is None:
+            QMessageBox.warning(self, "No Data", "Please run analysis or select a point first.")
+            return
+
+        from scipy.optimize import curve_fit
+        
+        # Prevent duplicate overlays
+        ax.clear()
+        
+        # Replot Base Data
+        t_base = t * 1000 if ax == self.ax_detail else t
+        ax.scatter(t_base, y, c='b', alpha=0.6, label='Truncation Amp')
+        
+        ax.set_xlabel("Time (ms)" if ax == self.ax_detail else "Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.grid(True, linestyle=":", alpha=0.7)
+        
+        # Define Model: Damped Cosine (simulating beat pattern)
+        # Note: This is an empirical fit to the magnitude beats, not the complex signal.
+        # Magnitude of A*cos(wt) + B*cos(wt+dw) is roughly |cos(dw/2 * t)| envelope.
+        # So we fit  A * exp(-t/T2) * |cos(pi * J * t + phi)| + C
+        
+        def beat_model(t, A, T2, J, phi, C):
+            decay = np.exp(-t / T2)
+            osc = np.abs(np.cos(np.pi * J * t + phi))
+            return A * decay * osc + C
+            
+        # Initial Guesses
+        # A: max amp
+        # T2: from simple fit (if available) or 0.5s
+        # J: Count peaks? 
+        #   Length = max(t) - min(t). Peaks ~ 5. Freq ~ 5/Length. J ~ 10-20Hz?
+        #   Let's guess 10 Hz.
+        
+        p0 = [np.max(y), 0.3, 10.0, 0.0, 0.0]
+        bounds = (
+            [0,     0.01, 0.1,  -np.pi, 0],   # Lower
+            [np.inf, 5.0,  50.0, np.pi, np.inf] # Upper
+        )
+        
+        try:
+            popt, pcov = curve_fit(beat_model, t, y, p0=p0, bounds=bounds, maxfev=2000)
+            
+            A_fit, T2_fit, J_fit, phi_fit, C_fit = popt
+            
+            # Plot
+            t_plot = np.linspace(min(t), max(t), 200)
+            y_plot = beat_model(t_plot, *popt)
+            
+            # Identify units scaling
+            t_plot_scaled = t_plot * 1000 if ax == self.ax_detail else t_plot
+            
+            ax.plot(t_plot_scaled, y_plot, 'g-', linewidth=2, alpha=0.8, label=f'Beat J={J_fit:.1f}Hz')
+            ax.legend(fontsize='small')
+            canvas.draw()
+            
+            self.lbl_adv_result.setText(f"Beat Fit: J={J_fit:.2f} Hz | T2*={T2_fit*1000:.1f} ms")
+            
+        except Exception as e:
+            self.lbl_adv_result.setText(f"Fit Failed: {str(e)}")
+            print(f"Cosine Fit Error: {e}")
+
 
 def main():
     app = QApplication(sys.argv)

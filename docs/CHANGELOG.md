@@ -6,6 +6,7 @@
 - **Analysis UI**: Added "Enable Iterative Tracking" and "Tracking Window (Hz)" inputs.
 - **UI Refactor**: Split interface into Processing, Detection, and Analysis tabs.
 - **Persistence**: Updated settings to save/load tracking parameters.
+- **Advanced Analysis**: Added "Fit Peak Envelope" (accuarte T2*) and "Fit J-Coupling" (Cosine model) tools for analyzing beating signals.
 
 
 ## [Unreleased] - 2026-01-16
