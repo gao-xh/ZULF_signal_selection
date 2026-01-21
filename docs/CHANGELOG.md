@@ -1,5 +1,13 @@
 # Changelog
 
+## [Current] - 2026-XX-XX
+### Added
+- **Iterative Peak Tracking**: Implemented dynamic peak search ($Center_t = Peak_{t-1}$) in Global Analysis.
+- **Analysis UI**: Added "Enable Iterative Tracking" and "Tracking Window (Hz)" inputs.
+- **UI Refactor**: Split interface into Processing, Detection, and Analysis tabs.
+- **Persistence**: Updated settings to save/load tracking parameters.
+
+
 ## [Unreleased] - 2026-01-16
 
 ### Fixed

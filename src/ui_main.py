@@ -239,7 +239,7 @@ class BatchRelaxationWorker(QThread):
     progress = Signal(str, int)
     error = Signal(str)
 
-    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False):
+    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, use_tracking=False, track_win_hz=5.0):
         super().__init__()
         self.data = full_data
         self.target_freqs = target_freqs_df # DataFrame with 'Freq_Hz' column
@@ -249,6 +249,8 @@ class BatchRelaxationWorker(QThread):
         self.t_end = t_end
         self.points = points
         self.zero_fill_front = zero_fill_front
+        self.use_tracking = use_tracking
+        self.track_win_hz = track_win_hz
 
     def run(self):
         try:
@@ -297,14 +299,6 @@ class BatchRelaxationWorker(QThread):
             # Pre-allocate buffer
             padded = np.zeros(N, dtype=dtype)
             
-            # We need to run the sweep for EACH freq?
-            # NO! That would be inefficient. ONE sweep over time, then measure ALL peaks in spectrum.
-            # Correct approach:
-            # Loop over Time Steps:
-            #   Calculate FFT
-            #   Loop over Target Freqs:
-            #       Measure Amp
-            
             # Prepare result structures
             # Dictionary: freq -> {times:[], amps:[]}
             curve_data = { row['Freq_Hz']: {'times': [], 'amps': []} for _, row in self.target_freqs.iterrows() }
@@ -313,9 +307,19 @@ class BatchRelaxationWorker(QThread):
             freq_to_idx = {}
             for f in curve_data.keys():
                 freq_to_idx[f] = np.argmin(np.abs(full_freqs - f))
-                
-            search_r = 5
             
+            # Define State for Iterative Tracking
+            current_peak_indices = freq_to_idx.copy()
+            
+            # Calculate Search Radius
+            hz_per_point = self.fs / N if N > 0 else 1.0
+            if self.use_tracking and self.track_win_hz > 0:
+                # Radius = Half Window / Resolution
+                r_pts = int(np.ceil((self.track_win_hz / 2.0) / hz_per_point))
+                search_r = max(1, r_pts)
+            else:
+                search_r = 5 # Default static small window
+
             total_steps = len(trunc_points_list)
             
             for i, start_iter in enumerate(trunc_points_list):
@@ -340,18 +344,37 @@ class BatchRelaxationWorker(QThread):
                  
                  current_time = start_iter / self.fs
                  
+                 # Prepare next iteration updates
+                 next_indices_update = {}
+
                  # 3. Measure All Peaks
-                 for f_key, idx_center in freq_to_idx.items():
+                 for f_key in curve_data.keys():
+                     # Use current tracked index
+                     idx_center = current_peak_indices[f_key]
+                     
                      idx_start = max(0, idx_center - search_r)
                      idx_end = min(N, idx_center + search_r + 1)
                      
                      if idx_end > idx_start:
-                        peak_amp = np.max(spec_mag[idx_start:idx_end])
+                        segment_view = spec_mag[idx_start:idx_end]
+                        peak_amp = np.max(segment_view)
+                        
+                        # Logic: If tracking, find local max index to update center
+                        if self.use_tracking:
+                            local_max = np.argmax(segment_view)
+                            abs_max_idx = idx_start + local_max
+                            next_indices_update[f_key] = abs_max_idx
                      else:
                         peak_amp = 0
+                        if self.use_tracking:
+                            next_indices_update[f_key] = idx_center # Keep if lost
                      
                      curve_data[f_key]['times'].append(current_time)
                      curve_data[f_key]['amps'].append(peak_amp)
+                
+                 # Update centers for next step
+                 if self.use_tracking:
+                     current_peak_indices.update(next_indices_update)
             
             # Post-processing: Fit T2* for all
             summary_list = []
@@ -458,6 +481,9 @@ class MainWindow(QMainWindow):
         self.current_evo_data = None
         self.current_processed_time = None
         
+        self.batch_results_summary = None
+        self.batch_results_details = None
+
         # New: Explicit sampling rate storage
         self.sampling_rate = 1000.0 # Default fallback
 
@@ -741,6 +767,23 @@ class MainWindow(QMainWindow):
         self.chk_relax_zerofill.setToolTip("Truncated points renamed to zero")
         relax_layout.addWidget(self.chk_relax_zerofill)
 
+        # -- Iterative Tracking Controls --
+        tracking_layout = QHBoxLayout()
+        self.chk_iterative_tracking = QCheckBox("Iterative Track")
+        self.chk_iterative_tracking.setToolTip("Dynamic center search (Center(t) = Peak(t-1))")
+        # Connect to sync logic
+        self.chk_iterative_tracking.stateChanged.connect(self.sync_iterative_start_time)
+        tracking_layout.addWidget(self.chk_iterative_tracking)
+
+        self.spin_track_window_hz = QDoubleSpinBox()
+        self.spin_track_window_hz.setRange(0.1, 50.0)
+        self.spin_track_window_hz.setValue(5.0)
+        self.spin_track_window_hz.setSuffix(" Hz")
+        self.spin_track_window_hz.setToolTip("Search window width in Hz")
+        tracking_layout.addWidget(self.spin_track_window_hz)
+        relax_layout.addLayout(tracking_layout)
+        # ---------------------------------
+
         self.chk_log_t2 = QCheckBox("Log T2* View")
         self.chk_log_t2.setToolTip("View Output as Log Scale")
         self.chk_log_t2.stateChanged.connect(self.plot_global_results)
@@ -942,6 +985,8 @@ class MainWindow(QMainWindow):
                 'relax_end': self.spin_relax_end.value(),
                 'relax_points': self.spin_relax_points.value(),
                 'relax_zerofill': self.chk_relax_zerofill.isChecked(),
+                'relax_use_tracking': self.chk_iterative_tracking.isChecked(),
+                'relax_track_hz': self.spin_track_window_hz.value(),
                 
                 # Plot Settings
                 'view_freq_min': self.freq_min.value(),
@@ -1015,6 +1060,10 @@ class MainWindow(QMainWindow):
             set_val(self.spin_relax_points, 'relax_points', int)
             if 'relax_zerofill' in params:
                 self.chk_relax_zerofill.setChecked(params['relax_zerofill'])
+            if 'relax_use_tracking' in params:
+                self.chk_iterative_tracking.setChecked(params['relax_use_tracking'])
+            if 'relax_track_hz' in params:
+                self.spin_track_window_hz.setValue(params['relax_track_hz'])
             
             if 'view_freq_min' in params: self.freq_min.setValue(params['view_freq_min'])
             if 'view_freq_max' in params: self.freq_max.setValue(params['view_freq_max'])
@@ -1077,6 +1126,38 @@ class MainWindow(QMainWindow):
              self.spin_relax_start.setDecimals(1)
              self.spin_relax_end.setSuffix(" ms")
              self.spin_relax_end.setDecimals(1)
+
+    def sync_iterative_start_time(self):
+        """Called when Iterative Track is toggled. Enforce start time = trunc start."""
+        if not self.chk_iterative_tracking.isChecked():
+            # Re-enable if manual control desired (optional, maybe keep enabled if user wants to change?)
+            # But if we enforced lock, we might want to let them change it back.
+            self.spin_relax_start.setEnabled(True)
+            return
+
+        # Lock to Truncation Start
+        trunc_pts = self.trunc_slider.value()
+        
+        # Disable to indicate lock? Or just set value?
+        # User requested "lock", so disabling is clearer visual feedback.
+        # But maybe they want to see the value.
+        self.spin_relax_start.setEnabled(False) # Visual lock
+        
+        unit = self.combo_relax_unit.currentText()
+        
+        self.blockSignals(True)
+        if unit == "Points":
+            self.spin_relax_start.setValue(trunc_pts)
+        else:
+             # Convert using sampling rate
+             if self.sampling_rate and self.sampling_rate > 0:
+                 t_ms = (trunc_pts / self.sampling_rate) * 1000.0
+                 self.spin_relax_start.setValue(t_ms)
+             else:
+                 # Fallback if no data loaded yet
+                 pass
+        self.blockSignals(False)
+        self.statusBar().showMessage(f"Iterative Mode: Start Time locked to {trunc_pts} pts")
 
     def on_analysis_mode_changed(self, index):
         mode_text = self.combo_analysis_mode.currentText()
@@ -1600,6 +1681,31 @@ class MainWindow(QMainWindow):
              
         points = self.spin_relax_points.value()
         zero_fill_front = self.chk_relax_zerofill.isChecked()
+        
+        # Iterative Tracking Settings
+        use_tracking = self.chk_iterative_tracking.isChecked()
+        track_win_hz = self.spin_track_window_hz.value()
+
+        # [Iterative Mode Correction]
+        # If tracking is enabled, the starting point MUST match the point where peaks were detected (Truncation Start).
+        # Otherwise, the initial guess (Global Peaks) might be invalid for a different time point due to drift.
+        if use_tracking:
+            trunc_pts = self.trunc_slider.value()
+            t_trunc = trunc_pts / sampling_rate
+            
+            # Enforce synchronization
+            if abs(t_start - t_trunc) > 1e-6: # Float comparison
+                print(f"Iterative Mode: Auto-locking Start Time to Truncation Start ({t_trunc*1000:.1f} ms)")
+                self.statusBar().showMessage(f"Iterative Mode: Locked Start Time to {t_trunc*1000:.1f} ms (Truncation Point)")
+                
+                t_start = t_trunc
+                # Sync UI
+                self.blockSignals(True)
+                if unit == "Points":
+                    self.spin_relax_start.setValue(trunc_pts)
+                else:
+                     self.spin_relax_start.setValue(t_trunc * 1000.0)
+                self.blockSignals(False)
 
         # UI State
         self.btn_batch_run.setEnabled(False)
@@ -1616,7 +1722,9 @@ class MainWindow(QMainWindow):
             sampling_rate,
             params,
             t_start, t_end, points,
-            zero_fill_front
+            zero_fill_front,
+            use_tracking,
+            track_win_hz
         )
         self.batch_worker.finished.connect(self.on_batch_analysis_finished)
         self.batch_worker.progress.connect(self.on_worker_progress)
@@ -1641,11 +1749,12 @@ class MainWindow(QMainWindow):
         
         self.ax_detail.clear() # Clear detail too
         
-        df = self.batch_results_summary
-        if df.empty:
-             self.ax_evo.text(0.5, 0.5, "No results", ha='center')
+        if self.batch_results_summary is None or self.batch_results_summary.empty:
+             self.ax_evo.text(0.5, 0.5, "No results or Global Analysis not run", ha='center')
              self.canvas_evo.draw()
              return
+
+        df = self.batch_results_summary
              
         # Scatter Freq vs T2*
         # Use simple scatter with picker=5
