@@ -20,7 +20,7 @@ from matplotlib.figure import Figure
 
 from src.ui_components import SliderSpinBox
 from src.loader import ProgressiveLoader
-from src.processing import Processor
+from src.processing import Processor, CurveFitter
 from src.validator import SignalValidator
 from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES
 
@@ -1924,16 +1924,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Data", "Please run analysis or select a point first.")
             return
 
-        from scipy.signal import find_peaks
-        from scipy.stats import linregress
-        
         # Unpack shared data
         times = self.current_decay_data['times']
         amps = self.current_decay_data['amps']
         ax = self.current_decay_data['ax']
         canvas = self.current_decay_data['canvas']
         
-        # Remove previous Envelope Fit if exists to prevent stacking
+        # Remove previous Envelope Fit lines
         lines_to_remove = []
         for line in ax.get_lines():
             label = line.get_label()
@@ -1942,51 +1939,33 @@ class MainWindow(QMainWindow):
         for line in lines_to_remove:
             line.remove()
         
-        # Find peaks (Envelope)
-        # We assume the signal is oscillating, so we look for local maxima
-        peaks, _ = find_peaks(amps)
+        # Calculate
+        result = CurveFitter.fit_envelope(times, amps)
         
-        if len(peaks) < 3:
-            self.lbl_adv_result.setText("Envelope Fit: Not enough peaks found.")
+        if result['status'] != 'success':
+            self.lbl_adv_result.setText(result['status'])
             return
             
-        t_peaks = times[peaks]
-        a_peaks = amps[peaks]
+        t2_env = result['t2']
+        r2 = result['r2']
         
-        # Log-Linear Fit
-        valid = a_peaks > 0
-        if np.sum(valid) < 3:
-             self.lbl_adv_result.setText("Envelope Fit: Peaks too low.")
-             return
-             
-        slope, intercept, r_val, _, _ = linregress(t_peaks[valid], np.log(a_peaks[valid]))
+        # Plot Fit
+        # Identify units scaling
+        t_plot_scaled = result['t_plot'] * 1000 if ax == self.ax_detail else result['t_plot']
         
-        if slope >= 0:
-            self.lbl_adv_result.setText("Envelope Fit: Signal is growing (Slope >= 0).")
-            return
-            
-        t2_env = -1.0 / slope
-        r2 = r_val**2
+        ax.plot(t_plot_scaled, result['y_plot'], 
+                'orange', linewidth=2, linestyle='--', label=f'Env T2*={t2_env*1000:.1f}ms')
         
-        # Plot
-        t_plot = np.linspace(min(times), max(times), 100)
-        y_plot = np.exp(intercept + slope * t_plot)
+        # Plot Peaks
+        t_peaks_plot = result['peaks_t'] * 1000 if ax == self.ax_detail else result['peaks_t']
+        ax.plot(t_peaks_plot, result['peaks_a'], 'rx', markersize=5, label='Env Peaks')
         
-        ax.plot(t_plot * 1000 if ax == self.ax_detail else t_plot, 
-                y_plot, 'orange', linewidth=2, linestyle='--', label=f'Env T2*={t2_env*1000:.1f}ms')
-        
-        # Identify peaks on plot
-        t_peaks_plot = t_peaks * 1000 if ax == self.ax_detail else t_peaks
-        ax.plot(t_peaks_plot, a_peaks, 'rx', markersize=5, label='Env Peaks') # Mark used peaks
-        
-        # Update legend, removing duplicate labels if any
+        # Update legend (hide Env Peaks)
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
-        # Filter out 'Env Peaks' from legend if we don't want it cluttering
-        if 'Env Peaks' in by_label: 
-            del by_label['Env Peaks']
-            
+        if 'Env Peaks' in by_label: del by_label['Env Peaks']
         ax.legend(by_label.values(), by_label.keys(), fontsize='small')
+        
         canvas.draw()
         
         self.lbl_adv_result.setText(f"Envelope T2*: {t2_env*1000:.1f} ms (R2={r2:.3f})")
@@ -1996,15 +1975,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Data", "Please run analysis or select a point first.")
             return
 
-        from scipy.optimize import curve_fit
-        
         # Unpack shared data
         t = self.current_decay_data['times']
         y = self.current_decay_data['amps']
         ax = self.current_decay_data['ax']
         canvas = self.current_decay_data['canvas']
 
-        # Prevent duplicate overlays: Remove old Beat Fits
+        # Remove old Beat Fits
         lines_to_remove = []
         for line in ax.get_lines():
             lbl = line.get_label()
@@ -2013,134 +1990,52 @@ class MainWindow(QMainWindow):
         for line in lines_to_remove:
             line.remove()
         
-        # Define Model: Damped Cosine (simulating beat pattern)
-        # Note: This is an empirical fit to the magnitude beats, not the complex signal.
-        # Magnitude of A*cos(wt) + B*cos(wt+dw) is roughly |cos(dw/2 * t)| envelope.
-        # So we fit  A * exp(-t/T2) * |cos(pi * J * t + phi)| + C
+        # Calculate
+        result = CurveFitter.fit_damped_cosine(t, y)
         
-        def beat_model(t, A, T2, J, phi, C):
-            decay = np.exp(-t / T2)
-            osc = np.abs(np.cos(np.pi * J * t + phi))
-            return A * decay * osc + C
+        if result['status'] != 'success':
+             self.lbl_adv_result.setText(result['status'])
+             return
+             
+        J_fit = result['J']
+        T2_fit = result['T2']
             
-        # Initial Guesses
-        # A: max amp
-        # T2: from simple fit (if available) or 0.5s
-        # J: Count peaks? 
-        #   Length = max(t) - min(t). Peaks ~ 5. Freq ~ 5/Length. J ~ 10-20Hz?
+        # Plot
+        t_plot_scaled = result['t_plot'] * 1000 if ax == self.ax_detail else result['t_plot']
+        ax.plot(t_plot_scaled, result['y_plot'], 'g-', linewidth=2, alpha=0.8, label=f'Beat J={J_fit:.1f}Hz')
         
-        # Better J guess using peak counting
-        from scipy.signal import find_peaks
-        peaks_idx, _ = find_peaks(y, height=np.max(y)*0.1) 
-        if len(peaks_idx) > 1:
-            t_span_peaks = t[peaks_idx[-1]] - t[peaks_idx[0]]
-            if t_span_peaks > 0:
-                # Frequency = (N-1) / Duration
-                est_freq = (len(peaks_idx) - 1) / t_span_peaks
-                J_guess = est_freq
-            else:
-                J_guess = 10.0
-        else:
-            J_guess = 10.0
+        # Update legend
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        if 'Env Peaks' in by_label: del by_label['Env Peaks']
+        ax.legend(by_label.values(), by_label.keys(), fontsize='small')
         
-        # print(f"DEBUG: J_guess={J_guess:.2f}Hz based on {len(peaks_idx)} peaks")
+        canvas.draw()
+        
+        self.lbl_adv_result.setText(f"Beat Fit: J={J_fit:.2f} Hz | T2*={T2_fit*1000:.1f} ms")
 
-        p0 = [np.max(y), 0.3, J_guess, 0.0, 0.0]
-        bounds = (
-            [0,     0.01, 0.1,  -np.pi, 0],   # Lower
-            [np.inf, 5.0,  300.0, np.pi, np.inf] # Upper
-        )
-        
-        try:
-            popt, pcov = curve_fit(beat_model, t, y, p0=p0, bounds=bounds, maxfev=2000)
-            
-            A_fit, T2_fit, J_fit, phi_fit, C_fit = popt
-            
-            # Plot - use high resolution to capture high-freq oscillations smoothly
-            t_plot = np.linspace(min(t), max(t), 1000)
-            y_plot = beat_model(t_plot, *popt)
-            
-            # Identify units scaling
-            t_plot_scaled = t_plot * 1000 if ax == self.ax_detail else t_plot
-            
-            ax.plot(t_plot_scaled, y_plot, 'g-', linewidth=2, alpha=0.8, label=f'Beat J={J_fit:.1f}Hz')
-            
-            # Update legend, ensuring 'Env Peaks' remains hidden if present
-            handles, labels = ax.get_legend_handles_labels()
-            by_label = dict(zip(labels, handles))
-            if 'Env Peaks' in by_label:
-                del by_label['Env Peaks']
-            ax.legend(by_label.values(), by_label.keys(), fontsize='small')
-            
-            canvas.draw()
-            
-            self.lbl_adv_result.setText(f"Beat Fit: J={J_fit:.2f} Hz | T2*={T2_fit*1000:.1f} ms")
-            
-        except Exception as e:
-            self.lbl_adv_result.setText(f"Fit Failed: {str(e)}")
-            print(f"Cosine Fit Error: {e}")
 
     def run_oscillation_filter(self):
         if not hasattr(self, 'current_decay_data') or self.current_decay_data is None:
             QMessageBox.warning(self, "No Data", "Please run analysis or select a point first.")
             return
             
-        import scipy.fft
-        
         # Unpack shared data
         t = self.current_decay_data['times']
         y = self.current_decay_data['amps']
         ax = self.current_decay_data['ax']
         canvas = self.current_decay_data['canvas']
         
-        # Calculate Sampling Frequency of the Decay Curve
-        dt = np.mean(np.diff(t))
-        fs_decay = 1.0 / dt
-        n = len(y)
+        # Calculate
+        result = CurveFitter.remove_oscillation_fft(t, y)
         
-        # Perform FFT (Real input)
-        yf = scipy.fft.rfft(y)
-        xf = scipy.fft.rfftfreq(n, dt)
-        
-        # Identify Target Frequency to Remove
-        # 1. Try to find the aliased signal frequency if known
-        target_f_remove = None
-        freqs_list = self.current_decay_data.get('freqs', None)
-        if freqs_list is not None and len(freqs_list) > 0:
-            original_signal_freq = np.mean(freqs_list)
-            # Aliasing formula: f_alias = | f_sig - round(f_sig / fs) * fs |
-            # Simplest view: modulo fs
-            # Careful with Nyquist folding. 
-            # It's easier to just find the peak in FFT "near" the expected alias, or just the MAX element.
-            pass
+        if result['status'] != 'success':
+            self.lbl_adv_result.setText(result['status'])
+            return
             
-        # Strategy: Find dominant peak in AC component (Frequency > 0)
-        # We skip low freq (Exponential decay is near DC)
-        # Let's ignore first 5% of bins to skip the main decay lobe
-        idx_skip = max(2, int(0.05 * len(xf))) 
-        
-        if idx_skip >= len(xf):
-             self.lbl_adv_result.setText("Filter: Data too short.")
-             return
-             
-        # Find max peak in the rest of the spectrum
-        idx_max = idx_skip + np.argmax(np.abs(yf[idx_skip:]))
-        f_osc = xf[idx_max]
-        
-        # Zero out the peak and neighbours
-        # Notch width
-        notch_width_bins = max(1, int(len(xf) * 0.02)) # 2% width
-        idx_start = max(0, idx_max - notch_width_bins)
-        idx_end = min(len(xf), idx_max + notch_width_bins + 1)
-        
-        yf_clean = yf.copy()
-        yf_clean[idx_start:idx_end] = 0
-        
-        # Restore DC offset if we accidentally killed it (unlikely if we skipped DC)
-        # (IFFT handles it)
-        
-        # Inverse FFT
-        y_clean = scipy.fft.irfft(yf_clean, n=n)
+        y_clean = result['y_clean']
+        f_osc = result['f_osc']
+        fs_decay = result['fs_decay']
         
         # Remove previous 'Filtered' line
         lines_to_remove = [line for line in ax.get_lines() if line.get_label() == 'Filtered']

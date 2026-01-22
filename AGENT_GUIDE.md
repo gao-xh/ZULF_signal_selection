@@ -79,7 +79,12 @@
 
 ### 6. Critical Watchlist (Avoid these pitfalls)
 
-1.  **Path dependencies**:
+1.  **Strict Separation of Concerns**:
+    *   **Logic in `src/processing.py`**: All mathematical calculations (FFT, fitting, filtering, algorithms) MUST reside here.
+    *   **UI in `src/ui_main.py`**: Only UI logic (buttons, layouts, plotting, user input). It should call `processing` methods to get results.
+    *   **Never pile math updates** into `ui_main.py` for convenience. It makes the codebase unmaintainable.
+
+2.  **Path dependencies**:
     *   Never hardcode absolute paths (e.g., `C:\Users\...`). Use `pathlib` and relative paths.
     *   Data files should reside in `data/` and be ignored by Git if they are large.
 

@@ -1,7 +1,11 @@
 import sys
 import numpy as np
+import pandas as pd
 import scipy.signal
 import scipy.fft
+from scipy.signal import find_peaks
+from scipy.stats import linregress
+from scipy.optimize import curve_fit
 from pathlib import Path
 from src.config import (
     REFERENCES_DIR, 
@@ -169,3 +173,160 @@ class Processor:
             return auto_phase(spectrum)
         else:
             return 0.0, 0.0
+
+class CurveFitter:
+    """
+    Advanced analysis tools for decay curves.
+    Handles mathematical fitting (Envelope, Cosine/Beat) and Filtering.
+    """
+    
+    @staticmethod
+    def fit_envelope(times, amps):
+        """
+        Fits an exponential envelope to the peaks of the signal.
+        Returns:
+            result_dict: {
+                't2': float (seconds),
+                'r2': float,
+                'slope': float,
+                'intercept': float,
+                'status': str,    # 'success' or error message
+                't_plot': array,
+                'y_plot': array,
+                'peaks_idx': array, # Indices of peaks used
+                'peaks_t': array,
+                'peaks_a': array
+            }
+        """
+        # Find peaks (local maxima)
+        peaks, _ = find_peaks(amps)
+        
+        if len(peaks) < 3:
+            return {'status': "Envelope Fit: Not enough peaks found.", 't2': 0}
+            
+        t_peaks = times[peaks]
+        a_peaks = amps[peaks]
+        
+        # Log-Linear Fit
+        valid = a_peaks > 0
+        if np.sum(valid) < 3:
+             return {'status': "Envelope Fit: Peaks too low.", 't2': 0}
+             
+        slope, intercept, r_val, _, _ = linregress(t_peaks[valid], np.log(a_peaks[valid]))
+        
+        if slope >= 0:
+            return {'status': "Envelope Fit: Signal is growing (Slope >= 0).", 't2': 0}
+            
+        t2_env = -1.0 / slope
+        r2 = r_val**2
+        
+        # Generator plot data
+        t_plot = np.linspace(min(times), max(times), 100)
+        y_plot = np.exp(intercept + slope * t_plot)
+        
+        return {
+            'status': 'success',
+            't2': t2_env,
+            'r2': r2,
+            'slope': slope,
+            'intercept': intercept,
+            't_plot': t_plot,
+            'y_plot': y_plot,
+            'peaks_idx': peaks,
+            'peaks_t': t_peaks,
+            'peaks_a': a_peaks
+        }
+
+    @staticmethod
+    def fit_damped_cosine(times, amps, user_freq_guess=None):
+        """
+        Fits a damped cosine model: A * exp(-t/T2) * |cos(pi * J * t + phi)| + C
+        """
+        # Define Model
+        def beat_model(t, A, T2, J, phi, C):
+            decay = np.exp(-t / T2)
+            osc = np.abs(np.cos(np.pi * J * t + phi))
+            return A * decay * osc + C
+            
+        # Initial Guess Estimation
+        if user_freq_guess:
+             J_guess = user_freq_guess
+        else:
+            # Auto-estimate J from peaks
+            peaks_idx, _ = find_peaks(amps, height=np.max(amps)*0.1) 
+            if len(peaks_idx) > 1:
+                t_span_peaks = times[peaks_idx[-1]] - times[peaks_idx[0]]
+                if t_span_peaks > 0:
+                    est_freq = (len(peaks_idx) - 1) / t_span_peaks
+                    J_guess = est_freq
+                else:
+                    J_guess = 10.0
+            else:
+                J_guess = 10.0
+
+        p0 = [np.max(amps), 0.3, J_guess, 0.0, 0.0]
+        bounds = (
+            [0,     0.01, 0.1,  -np.pi, 0],   # Lower
+            [np.inf, 5.0,  300.0, np.pi, np.inf] # Upper
+        )
+        
+        try:
+            popt, pcov = curve_fit(beat_model, times, amps, p0=p0, bounds=bounds, maxfev=2000)
+            
+            # High res plot data
+            t_plot = np.linspace(min(times), max(times), 1000)
+            y_plot = beat_model(t_plot, *popt)
+            
+            return {
+                'status': 'success',
+                'params': popt, # A, T2, J, phi, C
+                'J': popt[2],
+                'T2': popt[1],
+                't_plot': t_plot,
+                'y_plot': y_plot
+            }
+            
+        except Exception as e:
+            return {'status': f"Fit Failed: {str(e)}", 'params': None}
+
+    @staticmethod
+    def remove_oscillation_fft(times, amps):
+        """
+        Removes high frequency oscillations using FFT notch filter.
+        """
+        dt = np.mean(np.diff(times))
+        fs_decay = 1.0 / dt
+        n = len(amps)
+        
+        # FFT
+        yf = scipy.fft.rfft(amps)
+        xf = scipy.fft.rfftfreq(n, dt)
+        
+        # Strategy: Find dominant peak in AC component (Frequency > 0)
+        # Ignore first 5% of bins (low freq decay)
+        idx_skip = max(2, int(0.05 * len(xf))) 
+        
+        if idx_skip >= len(xf):
+             return {'status': "Data too short."}
+             
+        # Find max peak
+        idx_max = idx_skip + np.argmax(np.abs(yf[idx_skip:]))
+        f_osc = xf[idx_max]
+        
+        # Zero out peak
+        notch_width_bins = max(1, int(len(xf) * 0.02)) # 2% width
+        idx_start = max(0, idx_max - notch_width_bins)
+        idx_end = min(len(xf), idx_max + notch_width_bins + 1)
+        
+        yf_clean = yf.copy()
+        yf_clean[idx_start:idx_end] = 0
+        
+        # Inverse FFT
+        y_clean = scipy.fft.irfft(yf_clean, n=n)
+        
+        return {
+            'status': 'success',
+            'y_clean': y_clean,
+            'f_osc': f_osc,
+            'fs_decay': fs_decay
+        }
