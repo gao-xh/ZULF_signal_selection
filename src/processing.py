@@ -290,57 +290,64 @@ class CurveFitter:
             return {'status': f"Fit Failed: {str(e)}", 'params': None}
 
     @staticmethod
-    def remove_oscillation_fft(times, amps):
+    def remove_oscillation_fft(times, amps, noise_level=None):
         """
-        Removes high frequency oscillations using FFT Low Pass Filter.
-        Uses mirror padding to reduce edge artifacts.
+        Removes high frequency oscillations using Butterworth Low Pass Filter.
+        Auto-detects oscillation frequency using FFT.
         """
         dt = np.mean(np.diff(times))
-        fs_decay = 1.0 / dt
-        n_orig = len(amps)
+        fs = 1.0 / dt
+        n = len(amps)
         
-        # Mirror Pad to reduce edge artifacts (Gibbs/Boundary)
-        # Pad length: 50% of the signal on both sides
-        n_pad = n_orig // 2
-        amps_padded = np.pad(amps, (n_pad, n_pad), mode='reflect')
-        n = len(amps_padded)
-        
+        # 1. Analyse Spectrum to find Oscillation Frequency
         # FFT
-        yf = scipy.fft.rfft(amps_padded)
+        yf = scipy.fft.rfft(amps)
         xf = scipy.fft.rfftfreq(n, dt)
         
         # Strategy: Find dominant peak in AC component (Frequency > 0)
-        # Low freq cutoff: Ignore first 5 bins (DC + Exp decay)
-        idx_skip = 5 
+        # Low freq cutoff: Ignore first few bins to avoid DC/Decay components
+        # Assuming decay is dominant at very low freq.
+        idx_skip = max(2, int(n * 0.02)) # Skip 2% low freq or at least 2 bins
         
         if idx_skip >= len(xf):
              return {'status': "Data too short."}
              
         # Find max peak (Oscillation)
+        # Search for peak in the rest of the spectrum
         idx_max = idx_skip + np.argmax(np.abs(yf[idx_skip:]))
         f_osc = xf[idx_max]
         
-        # Determine Cutoff for Low Pass Filter
-        # We cut slightly below the oscillation to remove it and all higher harmonics
-        # Margin: 10% of the oscillation frequency
-        f_cutoff = f_osc * 0.9
-        idx_cutoff = np.searchsorted(xf, f_cutoff)
+        # 2. Filter Design (Adaptive Moving Average)
+        # A Moving Average filter over several periods of oscillation to smooth out beats.
         
-        yf_clean = yf.copy()
-        # Low Pass Filter: Zero out everything above cutoff
-        yf_clean[idx_cutoff:] = 0
+        # Calculate samples per cycle
+        if f_osc > 0:
+            samples_per_cycle = int(round(fs / f_osc))
+        else:
+            samples_per_cycle = 5 
+            
+        # Use a larger window (e.g., 3 cycles) to crush residuals, 
+        # but don't exceed ~15% of total data to avoid killing the T2 decay shape itself.
+        target_cycles = 3
+        window_size = samples_per_cycle * target_cycles
         
-        # Inverse FFT
-        y_clean_padded = scipy.fft.irfft(yf_clean, n=n)
+        # Constraints on window size
+        max_window = int(n * 0.15) 
+        window_size = min(window_size, max_window)
+        window_size = max(window_size, 5)
         
-        # Remove padding
-        y_clean = y_clean_padded[n_pad : n_pad + n_orig]
-        
-        # Fit T2* to the cleaned curve
-        # TRIM EDGES: Ignore first/last 5% points for fitting to avoid FFT boundary artifacts
-        n_trim = max(2, int(n_orig * 0.05))
-        if len(times) > 2 * n_trim + 5:
-            # Use trimmed data for fit
+        # Ensure window is odd for symmetry
+        if window_size % 2 == 0:
+            window_size += 1
+            
+        # Apply Rolling Mean with aggressive smoothing
+        y_clean = pd.Series(amps).rolling(window=window_size, center=True, min_periods=1).mean().to_numpy()
+
+
+        # 3. Fit T2* to the cleaned curve
+        # TRIM EDGES: Filter artifacts (start/end)
+        n_trim = max(5, int(n * 0.05))
+        if len(times) > 2 * n_trim + 10:
             t_fit = times[n_trim:-n_trim]
             y_fit_data = y_clean[n_trim:-n_trim]
         else:
@@ -350,37 +357,96 @@ class CurveFitter:
         def exp_model(t, A, T2, C):
              return A * np.exp(-t/T2) + C
              
-        p0 = [np.max(y_fit_data)-np.min(y_fit_data), (t_fit[-1]-t_fit[0])/3.0, np.min(y_fit_data)]
-        bounds = ([0, 0, -np.inf], [np.inf, np.inf, np.inf])
+        # Robust Initial Guess with Bounds
+        # Estimate Baseline C as the minimum of the tail
+        y_min = np.min(y_fit_data)
+        y_max = np.max(y_fit_data)
+        
+        # Estimate T2 via two-point log calculation (assuming C=y_min)
+        # Slope of ln(y - C) vs t is -1/T2
+        
+        # Take top 10% and bottom 10% averages to be robust against noise
+        n_pts = len(y_fit_data)
+        n_avg = max(1, int(n_pts * 0.1))
+        
+        y_top = np.mean(y_fit_data[:n_avg])
+        y_bot = np.mean(y_fit_data[-n_avg:])
+        
+        # Determine C limit based on noise_level or data properties
+        # User requirement: C should be within the noise amplitude.
+        if noise_level is not None and noise_level > 0:
+            # If noise level is known, C cannot exceed it (or slightly above)
+            C_limit = noise_level * 1.5 
+        else:
+            # Fallback
+            C_limit = y_min + (y_max - y_min) * 0.01 
+        
+        # C_guess should be consistent with this limit
+        C_guess = 0.0 
+        
+        # T2 Guess Logic
+        val_start = max(1e-9, y_top - C_guess)
+        val_end = max(1e-9, y_bot - C_guess)
+        
+        # We need local time for T2 guess
+        dt_span = t_fit[-1] - t_fit[0]
+        
+        if dt_span > 0 and val_start > val_end:
+            T2_guess = dt_span / np.log(val_start / val_end)
+        else:
+            T2_guess = dt_span * 10.0 # Assume very long decay if flat
+
+        A_guess = max(1e-9, y_top - C_guess)
+        
+        p0 = [A_guess, T2_guess, C_guess]
+        
+        # Bounds: 
+        # C is constrained to [0, C_limit]
+        bounds = (
+            [0, 0, 0], 
+            [np.inf, np.inf, C_limit] 
+        )
         
         fit_res = {'T2': 0, 'R2': 0, 'status': 'fit_failed'}
         try:
-             popt, _ = curve_fit(exp_model, t_fit, y_fit_data, p0=p0, bounds=bounds, maxfev=1000)
+             # Shift time for numerical stability and A interpretation
+             t_start = t_fit[0]
+             
+             popt, _ = curve_fit(exp_model, t_fit - t_start, y_fit_data, p0=p0, bounds=bounds, maxfev=2000)
              A_fit, T2_fit, C_fit = popt
              
              # R2 (calc on trimmed data)
-             residuals = y_fit_data - exp_model(t_fit, *popt)
+             residuals = y_fit_data - exp_model(t_fit - t_start, *popt)
              ss_res = np.sum(residuals**2)
              ss_tot = np.sum((y_fit_data - np.mean(y_fit_data))**2)
-             r2 = 1 - (ss_res / ss_tot)
+             if ss_tot == 0:
+                 r2 = 0
+             else:
+                 r2 = 1 - (ss_res / ss_tot)
              
              # Generate full length fit curve for plotting
-             y_fit_full = exp_model(times, *popt)
+             # exp_model now expects time relative to t_start
+             y_fit_full = exp_model(times - t_start, *popt)
              
              fit_res = {
                  'status': 'success',
                  'T2': T2_fit,
                  'R2': r2,
                  'params': popt,
-                 'y_fit': y_fit_full # Plot full range
+                 'y_fit': y_fit_full 
              }
         except Exception as e:
              fit_res['error'] = str(e)
         
         return {
             'status': 'success',
-            'y_clean': y_clean,
+            'amps_filtered': y_clean,
             'f_osc': f_osc,
-            'fs_decay': fs_decay,
-            'fit_result': fit_res
+            'fit_result': {
+                'status': fit_res.get('status', 'fail'),
+                'T2': fit_res.get('T2', 0),
+                'R2': fit_res.get('R2', 0),
+                'fit_x': times,
+                'fit_y': fit_res.get('y_fit', [])
+            }
         }

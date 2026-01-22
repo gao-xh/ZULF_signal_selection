@@ -239,7 +239,7 @@ class BatchRelaxationWorker(QThread):
     progress = Signal(str, int)
     error = Signal(str)
 
-    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, use_tracking=False, track_win_hz=5.0):
+    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, use_tracking=False, track_win_hz=5.0, noise_threshold=None):
         super().__init__()
         self.data = full_data
         self.target_freqs = target_freqs_df # DataFrame with 'Freq_Hz' column
@@ -251,6 +251,7 @@ class BatchRelaxationWorker(QThread):
         self.zero_fill_front = zero_fill_front
         self.use_tracking = use_tracking
         self.track_win_hz = track_win_hz
+        self.noise_threshold = noise_threshold
 
     def run(self):
         try:
@@ -364,6 +365,17 @@ class BatchRelaxationWorker(QThread):
                         if self.use_tracking:
                             local_max = np.argmax(segment_view)
                             abs_max_idx = idx_start + local_max
+                            
+                            # DRIFT GUARD: Prevent tracking from walking too far from initial frequency
+                            # This fixes the "messy tail" artifact where tracker chases noise.
+                            initial_idx = freq_to_idx[f_key]
+                            max_drift_bins = 20 # Limit drift to ~20 bins (configurable?)
+                            
+                            if abs(abs_max_idx - initial_idx) > max_drift_bins:
+                                 # If drifted too far, snap back to initial or current center?
+                                 # Snap to initial is safer for T2* decay (signals shouldn't shift 100s of Hz)
+                                 abs_max_idx = initial_idx 
+                            
                             next_indices_update[f_key] = abs_max_idx
                             current_peak_val_hz = abs_max_idx * hz_per_point
                         else:
@@ -417,15 +429,25 @@ class BatchRelaxationWorker(QThread):
                  # Using CurveFitter from processing
                  t2_filt = 0
                  r2_filt = 0
+                 filt_details = {}  # Store filtered curve data
+                 
                  try:
                      # Only run if enough points
                      if len(times) > 10:
-                         filt_res = CurveFitter.remove_oscillation_fft(times, amps)
+                         # Pass noise threshold to constrain offset C
+                         filt_res = CurveFitter.remove_oscillation_fft(times, amps, noise_level=self.noise_threshold)
+                         # Store basic filtered signal if available
+                         if filt_res['status'] == 'success':
+                             filt_details['times_filt'] = filt_res.get('times', times)
+                             filt_details['amps_filt'] = filt_res.get('amps_filtered', []) 
+                         
                          if filt_res['status'] == 'success' and 'fit_result' in filt_res:
                             fr = filt_res['fit_result']
                             if fr['status'] == 'success':
                                 t2_filt = fr['T2']
                                 r2_filt = fr['R2']
+                                filt_details['fit_x_filt'] = fr['fit_x']
+                                filt_details['fit_y_filt'] = fr['fit_y']
                  except: 
                      pass
                  
@@ -437,7 +459,8 @@ class BatchRelaxationWorker(QThread):
                      'R2_filt': r2_filt
                  })
                  
-                 detailed_results[f_key] = {
+                 # Combine standard details with optional filtered details
+                 detail_entry = {
                      'times': times,
                      'amps': amps,
                      'freqs': np.array(data_c['freqs']),
@@ -446,6 +469,8 @@ class BatchRelaxationWorker(QThread):
                      't2': t2,
                      'r2': r2
                  }
+                 detail_entry.update(filt_details)
+                 detailed_results[f_key] = detail_entry
                  
             summary_df = pd.DataFrame(summary_list)
             
@@ -1812,7 +1837,8 @@ class MainWindow(QMainWindow):
             t_start, t_end, points,
             zero_fill_front,
             use_tracking,
-            track_win_hz
+            track_win_hz,
+            noise_threshold=self.peak_thr.value() # Pass noise threshold
         )
         self.batch_worker.finished.connect(self.on_batch_analysis_finished)
         self.batch_worker.progress.connect(self.on_worker_progress)
@@ -1910,60 +1936,95 @@ class MainWindow(QMainWindow):
         data = self.batch_results_details.get(freq)
         if not data: return
         
+        # Clean up existing twin axes to prevent stacking
+        for other_ax in self.ax_detail.figure.axes:
+             if other_ax is not self.ax_detail and other_ax.bbox.bounds == self.ax_detail.bbox.bounds:
+                  self.ax_detail.figure.delaxes(other_ax)
+        
         self.ax_detail.clear()
         
-        times = np.array(data['times'])
+        times_ms = np.array(data['times']) * 1000
         amps = np.array(data['amps']) # Ensure numpy array
         freqs = data.get('freqs', None) # Get frequencies
         
+        # Display Mode
+        mode = self.combo_t2_display_mode.currentText() if hasattr(self, 'combo_t2_display_mode') else "Show Raw T2*"
+        
+        # Prepare Filtered Data
+        amps_filt = data.get('amps_filt', None)
+        has_filt = amps_filt is not None and len(amps_filt) > 0
+        fit_x_filt = data.get('fit_x_filt', [])
+        fit_y_filt = data.get('fit_y_filt', [])
+        
+        # Get T2 values
+        t2_raw = data.get('t2', 0) * 1000.0
+        t2_filt_val = 0
+        if has_filt:
+             # Find in summary
+             if self.batch_results_summary is not None:
+                  row = self.batch_results_summary[self.batch_results_summary['Freq_Hz'] == freq]
+                  if not row.empty:
+                       t2_filt_val = row.iloc[0].get('T2_star_filt_ms', 0)
+
+        # Plotting Logic
+        if mode == "Show Filtered T2*" and has_filt:
+             self.ax_detail.plot(times_ms, amps_filt, 'o', color='gold', label='Filtered Data', markeredgecolor='k')
+             if len(fit_x_filt) > 0:
+                  self.ax_detail.plot(fit_x_filt*1000, fit_y_filt, 'g-', lw=2, label=f'Fit T2*={t2_filt_val:.0f}ms')
+                  
+        elif mode == "Show Overlay" and has_filt:
+             self.ax_detail.plot(times_ms, amps, 'bo', alpha=0.2, label='Raw')
+             self.ax_detail.plot(times_ms, amps_filt, 'o', color='gold', label='Filtered', markeredgecolor='k', markersize=4)
+             
+             fit_x_raw = data.get('fit_x', [])
+             fit_y_raw = data.get('fit_y', [])
+             if len(fit_x_raw) > 0:
+                  self.ax_detail.plot(fit_x_raw*1000, fit_y_raw, 'r--', lw=1, alpha=0.5, label=f'Raw {t2_raw:.0f}ms')
+             if len(fit_x_filt) > 0:
+                  self.ax_detail.plot(fit_x_filt*1000, fit_y_filt, 'g-', lw=2, label=f'Filt {t2_filt_val:.0f}ms')
+
+        else:
+             # Default: Raw
+             self.ax_detail.plot(times_ms, amps, 'bo', label='Data', alpha=0.6)
+             fit_x_raw = data.get('fit_x', [])
+             fit_y_raw = data.get('fit_y', [])
+             if len(fit_x_raw) > 0:
+                 self.ax_detail.plot(fit_x_raw*1000, fit_y_raw, 'r-', lw=2, label=f'Raw Fit T2*={t2_raw:.0f}ms')
+        
         # Save state for advanced analysis
         self.current_decay_data = {
-            'times': times,
+            'times': times_ms/1000, # Back to seconds
             'amps': amps,
             'freqs': freqs,
             'ax': self.ax_detail,
             'canvas': self.canvas_detail
         }
-        
-        self.ax_detail.plot(times * 1000, amps, 'bo', label='Data', alpha=0.6)
-        
+
         # Plot Freq Drift on twin axis if available and tracking was used
-        if freqs is not None and len(freqs) == len(times):
+        if freqs is not None and len(freqs) == len(times_ms):
             # Check if there is actual variation
             if np.std(freqs) > 0.01: 
                 ax2 = self.ax_detail.twinx()
-                ax2.plot(times * 1000, freqs, 'k-', alpha=0.15, linewidth=1, label='Freq Drift')
+                ax2.plot(times_ms, freqs, 'k-', alpha=0.15, linewidth=1, label='Freq Drift')
                 ax2.set_ylabel('Peak Center (Hz)', color='gray')
                 ax2.tick_params(axis='y', labelcolor='gray')
-                # Store ax2 in shared data so we can clear it if needed? 
-                # Actually, ax.clear() wipes twins too usually? No, it doesn't.
-                # But we call ax_detail.clear() at start, which removes the twin axes?
-                # Matplotlib ax.clear() does NOT remove twin axes, just the content. 
-                # We might need to manually remove the twin axis if it exists from previous plot.
-                # A simple way to avoid stacking twins is to clear the whole figure, but plot_detail_curve receives ax_detail...
-                # Actually, let's keep it simple. If we redraw, we might stack twins.
-                # Check fig.axes to cleanup.
-                
-                # Cleanup existing twins
-                for other_ax in self.ax_detail.figure.axes:
-                    if other_ax is not self.ax_detail and other_ax.bbox.bounds == self.ax_detail.bbox.bounds:
-                         self.ax_detail.figure.delaxes(other_ax)
-                
-                # Re-add twin
-                ax2 = self.ax_detail.twinx()
-                ax2.plot(times * 1000, freqs, 'k-', alpha=0.3, linewidth=1)
-                ax2.set_ylabel('Freq (Hz)', color='gray', fontsize=8)
-                ax2.tick_params(axis='y', labelcolor='gray', labelsize=8)
-                
-        if len(data['fit_x']) > 0:
-             fit_x_ms = data['fit_x'] * 1000
-             fit_y = data['fit_y']
-
-             t2 = data['t2']
-             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', linewidth=2, label=f'Raw Fit T2*={t2*1000:.0f}ms')
         
+        # Add Points info to title to explain resolution differences
+        pts_setting = self.spin_relax_points.value() if hasattr(self, 'spin_relax_points') else '?'
+        
+        # Check if tracking was likely used
+        is_tracking_data = False
+        if freqs is not None and len(freqs) == len(amps) and len(freqs) > 1:
+             if np.std(freqs) > 0.001: is_tracking_data = True
+             
+        track_str = " (Tracking ON)" if is_tracking_data else " (Static)"
+        
+        self.ax_detail.set_title(f"Decay @ {freq:.1f} Hz (Points={pts_setting}{track_str})")
         self.ax_detail.set_xlabel('Delay (ms)')
         self.ax_detail.set_ylabel('Amplitude')
+        self.ax_detail.legend(fontsize='small')
+        self.ax_detail.grid(True, alpha=0.3)
+        self.canvas_evo.draw()
         self.ax_detail.set_title(f"Decay @ {freq:.1f} Hz")
         self.ax_detail.legend(fontsize='small')
         self.ax_detail.grid(True, linestyle=":", alpha=0.7)
@@ -2081,8 +2142,12 @@ class MainWindow(QMainWindow):
         ax = self.current_decay_data['ax']
         canvas = self.current_decay_data['canvas']
         
+        # Get Current Noise Threshold as C limit
+        # Logic: C (Baseline) should not exceed the detection threshold (which is > Noise)
+        noise_est = self.peak_thr.value()
+        
         # Calculate
-        result = CurveFitter.remove_oscillation_fft(t, y)
+        result = CurveFitter.remove_oscillation_fft(t, y, noise_level=noise_est)
         
         if result['status'] != 'success':
             self.lbl_adv_result.setText(result['status'])
