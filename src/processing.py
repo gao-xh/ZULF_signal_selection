@@ -292,41 +292,95 @@ class CurveFitter:
     @staticmethod
     def remove_oscillation_fft(times, amps):
         """
-        Removes high frequency oscillations using FFT notch filter.
+        Removes high frequency oscillations using FFT Low Pass Filter.
+        Uses mirror padding to reduce edge artifacts.
         """
         dt = np.mean(np.diff(times))
         fs_decay = 1.0 / dt
-        n = len(amps)
+        n_orig = len(amps)
+        
+        # Mirror Pad to reduce edge artifacts (Gibbs/Boundary)
+        # Pad length: 50% of the signal on both sides
+        n_pad = n_orig // 2
+        amps_padded = np.pad(amps, (n_pad, n_pad), mode='reflect')
+        n = len(amps_padded)
         
         # FFT
-        yf = scipy.fft.rfft(amps)
+        yf = scipy.fft.rfft(amps_padded)
         xf = scipy.fft.rfftfreq(n, dt)
         
         # Strategy: Find dominant peak in AC component (Frequency > 0)
-        # Ignore first 5% of bins (low freq decay)
-        idx_skip = max(2, int(0.05 * len(xf))) 
+        # Low freq cutoff: Ignore first 5 bins (DC + Exp decay)
+        idx_skip = 5 
         
         if idx_skip >= len(xf):
              return {'status': "Data too short."}
              
-        # Find max peak
+        # Find max peak (Oscillation)
         idx_max = idx_skip + np.argmax(np.abs(yf[idx_skip:]))
         f_osc = xf[idx_max]
         
-        # Zero out peak
-        notch_width_bins = max(1, int(len(xf) * 0.02)) # 2% width
-        idx_start = max(0, idx_max - notch_width_bins)
-        idx_end = min(len(xf), idx_max + notch_width_bins + 1)
+        # Determine Cutoff for Low Pass Filter
+        # We cut slightly below the oscillation to remove it and all higher harmonics
+        # Margin: 10% of the oscillation frequency
+        f_cutoff = f_osc * 0.9
+        idx_cutoff = np.searchsorted(xf, f_cutoff)
         
         yf_clean = yf.copy()
-        yf_clean[idx_start:idx_end] = 0
+        # Low Pass Filter: Zero out everything above cutoff
+        yf_clean[idx_cutoff:] = 0
         
         # Inverse FFT
-        y_clean = scipy.fft.irfft(yf_clean, n=n)
+        y_clean_padded = scipy.fft.irfft(yf_clean, n=n)
+        
+        # Remove padding
+        y_clean = y_clean_padded[n_pad : n_pad + n_orig]
+        
+        # Fit T2* to the cleaned curve
+        # TRIM EDGES: Ignore first/last 5% points for fitting to avoid FFT boundary artifacts
+        n_trim = max(2, int(n_orig * 0.05))
+        if len(times) > 2 * n_trim + 5:
+            # Use trimmed data for fit
+            t_fit = times[n_trim:-n_trim]
+            y_fit_data = y_clean[n_trim:-n_trim]
+        else:
+            t_fit = times
+            y_fit_data = y_clean
+
+        def exp_model(t, A, T2, C):
+             return A * np.exp(-t/T2) + C
+             
+        p0 = [np.max(y_fit_data)-np.min(y_fit_data), (t_fit[-1]-t_fit[0])/3.0, np.min(y_fit_data)]
+        bounds = ([0, 0, -np.inf], [np.inf, np.inf, np.inf])
+        
+        fit_res = {'T2': 0, 'R2': 0, 'status': 'fit_failed'}
+        try:
+             popt, _ = curve_fit(exp_model, t_fit, y_fit_data, p0=p0, bounds=bounds, maxfev=1000)
+             A_fit, T2_fit, C_fit = popt
+             
+             # R2 (calc on trimmed data)
+             residuals = y_fit_data - exp_model(t_fit, *popt)
+             ss_res = np.sum(residuals**2)
+             ss_tot = np.sum((y_fit_data - np.mean(y_fit_data))**2)
+             r2 = 1 - (ss_res / ss_tot)
+             
+             # Generate full length fit curve for plotting
+             y_fit_full = exp_model(times, *popt)
+             
+             fit_res = {
+                 'status': 'success',
+                 'T2': T2_fit,
+                 'R2': r2,
+                 'params': popt,
+                 'y_fit': y_fit_full # Plot full range
+             }
+        except Exception as e:
+             fit_res['error'] = str(e)
         
         return {
             'status': 'success',
             'y_clean': y_clean,
             'f_osc': f_osc,
-            'fs_decay': fs_decay
+            'fs_decay': fs_decay,
+            'fit_result': fit_res
         }

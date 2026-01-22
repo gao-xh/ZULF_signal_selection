@@ -1905,7 +1905,7 @@ class MainWindow(QMainWindow):
              fit_y = data['fit_y']
 
              t2 = data['t2']
-             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', linewidth=2, label=f'Simple Fit ({t2*1000:.0f}ms)')
+             self.ax_detail.plot(fit_x_ms, fit_y, 'r-', linewidth=2, label=f'Raw Fit T2*={t2*1000:.0f}ms')
         
         self.ax_detail.set_xlabel('Delay (ms)')
         self.ax_detail.set_ylabel('Amplitude')
@@ -2036,19 +2036,46 @@ class MainWindow(QMainWindow):
         y_clean = result['y_clean']
         f_osc = result['f_osc']
         fs_decay = result['fs_decay']
+        fit_res = result.get('fit_result', {})
         
-        # Remove previous 'Filtered' line
-        lines_to_remove = [line for line in ax.get_lines() if line.get_label() == 'Filtered']
+        # Remove previous 'Filtered' and its fit lines
+        lines_to_remove = []
+        for line in ax.get_lines():
+            lbl = line.get_label()
+            # ONLY remove lines that are specifically from the Filter tool
+            # 'Filtered' (Cyan) or 'Filtered Fit ...' (Red dashed)
+            if lbl and (lbl == 'Filtered' or lbl.startswith('Filtered Fit')):
+                lines_to_remove.append(line)
         for line in lines_to_remove: line.remove()
         
-        # Plot
+        # Plot Filtered Signal
         t_plot = t * 1000 if ax == self.ax_detail else t
         ax.plot(t_plot, y_clean, 'c-', linewidth=2.5, label='Filtered')
         
-        ax.legend(fontsize='small')
+        # Plot Filtered Fit
+        if fit_res.get('status') == 'success':
+            y_fit = fit_res['y_fit']
+            # Improved Label to identify it's from the filter
+            label_fit = f"Filtered Fit T2*={fit_res['T2']*1000:.1f}ms"
+            ax.plot(t_plot, y_fit, 'r--', linewidth=2.0, label=label_fit)
+            
+        # Deduplicate Legend
+        # Grab all unique labels in order
+        handles, labels = ax.get_legend_handles_labels()
+        unique = {}
+        for h, l in zip(handles, labels):
+            if l not in unique and l != 'Env Peaks': # Ignore Env Peaks in legend
+                unique[l] = h
+        
+        ax.legend(unique.values(), unique.keys(), fontsize='small')
+        
         canvas.draw()
         
-        self.lbl_adv_result.setText(f"Filtered Oscillation @ {f_osc:.1f} Hz (Decay Fs={fs_decay:.1f} Hz)")
+        status_text = f"Filtered {f_osc:.1f} Hz."
+        if fit_res.get('status') == 'success':
+            status_text += f" Filtered T2*={fit_res['T2']*1000:.1f}ms (R2={fit_res['R2']:.3f})"
+        
+        self.lbl_adv_result.setText(status_text)
 
 
 def main():
