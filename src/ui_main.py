@@ -2153,9 +2153,10 @@ class MainWindow(QMainWindow):
             self.lbl_adv_result.setText(result['status'])
             return
             
-        y_clean = result['y_clean']
-        f_osc = result['f_osc']
-        fs_decay = result['fs_decay']
+        y_clean = result.get('amps_filtered')
+        f_osc = result.get('f_osc', 0)
+        # fs_decay seems unused or legacy. If needed, we can get it from f_osc or just ignore.
+        
         fit_res = result.get('fit_result', {})
         
         # Remove previous 'Filtered' and its fit lines
