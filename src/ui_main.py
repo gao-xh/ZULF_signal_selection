@@ -397,9 +397,7 @@ class BatchRelaxationWorker(QThread):
                  
                  t2 = 0
                  r2 = 0
-                 fit_x = []
-                 fit_y = []
-                 
+                 # 1. Standard Fit (Raw)
                  valid = amps > 0
                  if np.sum(valid) > 2:
                      x_fit = times[valid]
@@ -414,10 +412,29 @@ class BatchRelaxationWorker(QThread):
                          fit_x = np.linspace(min(x_fit), max(x_fit), 50)
                          fit_y = np.exp(intercept + slope * fit_x)
                  
+                 # 2. Filtered Fit (Remove Oscillation) - OPTIONAL but computed for comparison
+                 # We keep it lightweight if possible, but user wants it global.
+                 # Using CurveFitter from processing
+                 t2_filt = 0
+                 r2_filt = 0
+                 try:
+                     # Only run if enough points
+                     if len(times) > 10:
+                         filt_res = CurveFitter.remove_oscillation_fft(times, amps)
+                         if filt_res['status'] == 'success' and 'fit_result' in filt_res:
+                            fr = filt_res['fit_result']
+                            if fr['status'] == 'success':
+                                t2_filt = fr['T2']
+                                r2_filt = fr['R2']
+                 except: 
+                     pass
+                 
                  summary_list.append({
                      'Freq_Hz': f_key,
                      'T2_star_ms': t2 * 1000.0,
-                     'R2': r2
+                     'R2': r2,
+                     'T2_star_filt_ms': t2_filt * 1000.0,
+                     'R2_filt': r2_filt
                  })
                  
                  detailed_results[f_key] = {
@@ -799,6 +816,13 @@ class MainWindow(QMainWindow):
         self.chk_log_t2.setToolTip("View Output as Log Scale")
         self.chk_log_t2.stateChanged.connect(self.plot_global_results)
         relax_layout.addWidget(self.chk_log_t2)
+        
+        # Display Mode Selection (Raw / Filtered / Overlay)
+        self.combo_t2_display_mode = QComboBox()
+        self.combo_t2_display_mode.addItems(["Show Raw T2*", "Show Filtered T2*", "Show Overlay"])
+        self.combo_t2_display_mode.setToolTip("Select T2* visualization mode")
+        self.combo_t2_display_mode.currentIndexChanged.connect(self.plot_global_results)
+        relax_layout.addWidget(self.combo_t2_display_mode)
 
         self.btn_batch_run = QPushButton("Run Global Map Analysis")
         self.btn_batch_run.setStyleSheet("background-color: #2196F3; color: white;")
@@ -1770,6 +1794,11 @@ class MainWindow(QMainWindow):
         self.btn_batch_run.setEnabled(False)
         self.progress_bar.setRange(0, 100) # Ensure range is set
         self.progress_bar.setValue(0)
+        
+        # CLEAR PREVIOUS RESULTS TO PREVENT STALE DATA DISPLAY
+        self.batch_results_summary = None
+        self.batch_results_details = None
+        
         self.ax_evo.clear()
         self.ax_evo.text(0.5, 0.5, "Running Batch Analysis...", ha='center', va='center')
         self.canvas_evo.draw()
@@ -1808,19 +1837,45 @@ class MainWindow(QMainWindow):
         
         self.ax_detail.clear() # Clear detail too
         
+        # Check if worker is running to prevent "No results" flash or stale data
+        if hasattr(self, 'batch_worker') and self.batch_worker is not None and self.batch_worker.isRunning():
+             self.ax_evo.clear()
+             self.ax_evo.text(0.5, 0.5, "Running Batch Analysis...\nPlease Wait.", ha='center', va='center')
+             self.canvas_evo.draw()
+             return
+        
         if self.batch_results_summary is None or self.batch_results_summary.empty:
              self.ax_evo.text(0.5, 0.5, "No results or Global Analysis not run", ha='center')
              self.canvas_evo.draw()
              return
 
         df = self.batch_results_summary
-             
-        # Scatter Freq vs T2*
-        # Use simple scatter with picker=5
-        sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_ms'], c=df['R2'], cmap='viridis', picker=5, s=40, edgecolors='k')
+        
+        # Determine Display Mode
+        mode = self.combo_t2_display_mode.currentText() if hasattr(self, 'combo_t2_display_mode') else "Show Raw T2*"
+        has_filtered = 'T2_star_filt_ms' in df.columns # Ensure filtered data exists
+        
+        if mode == "Show Overlay" and has_filtered:
+            # 1. Overlay Mode: Raw (Ghost) + Filtered (Color)
+            self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_ms'], c='gray', alpha=0.3, s=20, label='Raw (Noisy)')
+            
+            sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_filt_ms'], c=df['R2_filt'], cmap='viridis', picker=5, s=40, edgecolors='k', label='Filtered')
+            title = f"Global T2* Map (Overlay) (n={len(df)})"
+            self.ax_evo.legend(fontsize='small')
+            
+        elif mode == "Show Filtered T2*" and has_filtered:
+            # 2. Filtered Only
+            sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_filt_ms'], c=df['R2_filt'], cmap='viridis', picker=5, s=40, edgecolors='k')
+            title = f"Global T2* Map (Filtered) (n={len(df)})"
+            
+        else:
+            # 3. Raw Only (Default or fallback if no filtered data)
+            sc = self.ax_evo.scatter(df['Freq_Hz'], df['T2_star_ms'], c=df['R2'], cmap='viridis', picker=5, s=40, edgecolors='k')
+            title = f"Global T2* Map (Raw) (n={len(df)})"
+            
         self.ax_evo.set_xlabel('Frequency (Hz)')
         self.ax_evo.set_ylabel('T2* (ms)')
-        self.ax_evo.set_title(f"Global T2* Map (n={len(df)})")
+        self.ax_evo.set_title(title)
         self.ax_evo.grid(True, alpha=0.3)
         
         # Log Scale Option
