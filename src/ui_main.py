@@ -240,7 +240,15 @@ class RelaxationWorker(QThread):
             self.finished.emit(times, amps, fit_x, fit_y, t2, r2)
             
         except Exception as e:
-            self.error.emit(str(e)), measure_mode="Magnitude"):
+            self.error.emit(str(e))
+
+
+class BatchRelaxationWorker(QThread):
+    finished = Signal(object) # results_dict
+    progress = Signal(str, int)
+    error = Signal(str)
+
+    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, use_tracking=False, track_win_hz=5.0, noise_threshold=None, measure_mode="Magnitude"):
         super().__init__()
         self.data = full_data
         self.target_freqs = target_freqs_df # DataFrame with 'Freq_Hz' column
@@ -254,10 +262,6 @@ class RelaxationWorker(QThread):
         self.track_win_hz = track_win_hz
         self.noise_threshold = noise_threshold
         self.measure_mode = measure_mode
-        self.params = params
-        self.t_start = t_start
-        self.t_end = t_end
-        self.points = points
         self.zero_fill_front = zero_fill_front
         self.use_tracking = use_tracking
         self.track_win_hz = track_win_hz
