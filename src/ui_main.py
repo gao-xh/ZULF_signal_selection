@@ -1858,11 +1858,14 @@ class MainWindow(QMainWindow):
                 S_neg_flipped = np.flipud(Sxx[:idx_0, :])
                 
                 # Element-wise Max
-                limit = min(len(S_folded), len(S_neg_flipped))
-                # Skip DC (index 0 of f_folded) for the flip addition usually, or just overlay
-                # S_neg_flipped corresponds to -1, -2...
-                # S_folded[1:] corresponds to +1, +2...
-                S_folded[1:limit+1] = np.maximum(S_folded[1:limit+1], S_neg_flipped[:limit])
+                # Fix for shape mismatch error:
+                # Ensure we don't write past the end of S_folded or read past end of S_neg_flipped.
+                # Valid indices for writing S_folded start at 1. Max index is len(S_folded)-1.
+                # So we can write at most len(S_folded) - 1 elements.
+                limit = min(len(S_folded) - 1, len(S_neg_flipped))
+                
+                if limit > 0:
+                     S_folded[1:limit+1] = np.maximum(S_folded[1:limit+1], S_neg_flipped[:limit])
                 
                 f = f_folded
                 Sxx = S_folded
