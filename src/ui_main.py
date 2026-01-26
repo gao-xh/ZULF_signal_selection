@@ -22,6 +22,7 @@ from src.ui_components import SliderSpinBox
 from src.loader import ProgressiveLoader
 from src.processing import Processor, CurveFitter
 from src.validator import SignalValidator
+from src.auto_phase import auto_phase_entropy, apply_phase_correction
 from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES
 
 class LoaderWorker(QThread):
@@ -73,7 +74,7 @@ class RelaxationWorker(QThread):
     progress = Signal(str, int) # message, percent
     error = Signal(str)
 
-    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False):
+    def __init__(self, full_data, target_freq, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, measure_mode="Magnitude"):
         super().__init__()
         self.data = full_data
         self.target_freq = target_freq
@@ -83,6 +84,7 @@ class RelaxationWorker(QThread):
         self.t_end = t_end
         self.points = points
         self.zero_fill_front = zero_fill_front
+        self.measure_mode = measure_mode
 
     def run(self):
         try:
@@ -148,7 +150,10 @@ class RelaxationWorker(QThread):
             # Use complex128 if input is complex, else float
             dtype = self.data.dtype if np.iscomplexobj(self.data) else np.complex128
             padded = np.zeros(N, dtype=dtype)
-            
+            # Pre-retrieve global phase params for Fixed mode
+            global_p0 = self.params.get('p0', 0)
+            global_p1 = self.params.get('p1', 0)
+
             total_steps = len(trunc_points)
             for i, start_iter in enumerate(trunc_points):
                 # Report Progress
@@ -163,35 +168,39 @@ class RelaxationWorker(QThread):
                 processed_segment = apply_segment_processing(raw_segment)
                 
                 if self.zero_fill_front:
-                    # MODE: Zero-Fill Front (Keep data in place)
-                    # Structure: [0...0, processed_segment..., 0...]
-                    # Clear buffer to zero (in case it has old data)
                     padded[:] = 0
-                    # Insert at original position
-                    # processed_segment length is (N - start_iter)
                     padded[start_iter:] = processed_segment
                 else:
-                    # MODE: Shift Left (Cut front) - Standard
-                    # Structure: [processed_segment..., 0...0]
-                    # Copy to start
                     padded[:len(processed_segment)] = processed_segment
-                    # Clean the rest
                     padded[len(processed_segment):] = 0
                 
                 # 3. FFT
-                # overwrite_x=False to keep padded clean? No, we rewrite it anyway.
-
-                # overwrite_x=False to keep padded clean? No, we rewrite it anyway.
-                # But standard FFT might allocate new output array.
                 spec = scipy.fft.fft(padded)
-                spec_mag = np.abs(spec)
                 
-                # 4. Measure
+                # 4. Measure Mode Handling
+                if self.measure_mode == "Real (Auto-Phased)":
+                    # Run auto-phase on this specific slice
+                    # Note: This is computationally expensive!
+                    p0, p1 = auto_phase_entropy(spec)
+                    spec_phased = apply_phase_correction(spec, p0, p1)
+                    measure_data = np.real(spec_phased)
+                    
+                elif self.measure_mode == "Real (Fixed Phase)":
+                    # Use global params
+                    spec_phased = apply_phase_correction(spec, global_p0, global_p1)
+                    measure_data = np.real(spec_phased)
+                    
+                else: # "Magnitude"
+                    measure_data = np.abs(spec)
+                
+                # 5. Measure Peak
                 idx_start = max(0, target_idx - search_r)
                 idx_end = min(N, target_idx + search_r + 1)
                 
                 if idx_end > idx_start:
-                    peak_amp = np.max(spec_mag[idx_start:idx_end])
+                    # For Real parts, we might care about signed max or just max value
+                    # Usually peak height assumes positive peak after phasing.
+                    peak_amp = np.max(measure_data[idx_start:idx_end])
                 else:
                     peak_amp = 0
                 
@@ -231,19 +240,20 @@ class RelaxationWorker(QThread):
             self.finished.emit(times, amps, fit_x, fit_y, t2, r2)
             
         except Exception as e:
-            self.error.emit(str(e))
-
-
-class BatchRelaxationWorker(QThread):
-    finished = Signal(object) # results_dict
-    progress = Signal(str, int)
-    error = Signal(str)
-
-    def __init__(self, full_data, target_freqs_df, sampling_rate, params, t_start=0, t_end=0, points=50, zero_fill_front=False, use_tracking=False, track_win_hz=5.0, noise_threshold=None):
+            self.error.emit(str(e)), measure_mode="Magnitude"):
         super().__init__()
         self.data = full_data
         self.target_freqs = target_freqs_df # DataFrame with 'Freq_Hz' column
         self.fs = sampling_rate
+        self.params = params
+        self.t_start = t_start
+        self.t_end = t_end
+        self.points = points
+        self.zero_fill_front = zero_fill_front
+        self.use_tracking = use_tracking
+        self.track_win_hz = track_win_hz
+        self.noise_threshold = noise_threshold
+        self.measure_mode = measure_mode
         self.params = params
         self.t_start = t_start
         self.t_end = t_end
@@ -320,6 +330,9 @@ class BatchRelaxationWorker(QThread):
                 search_r = max(1, r_pts)
             else:
                 search_r = 5 # Default static small window
+# Retrieve global phase params
+            global_p0 = self.params.get('p0', 0)
+            global_p1 = self.params.get('p1', 0)
 
             total_steps = len(trunc_points_list)
             
@@ -341,14 +354,26 @@ class BatchRelaxationWorker(QThread):
                     
                  # 2. FFT
                  spec = scipy.fft.fft(padded)
-                 spec_mag = np.abs(spec)
+                 
+                 # 3. Measure Mode Handling
+                 if self.measure_mode == "Real (Auto-Phased)":
+                    p0, p1 = auto_phase_entropy(spec)
+                    spec_phased = apply_phase_correction(spec, p0, p1)
+                    measure_data = np.real(spec_phased)
+                 
+                 elif self.measure_mode == "Real (Fixed Phase)":
+                    spec_phased = apply_phase_correction(spec, global_p0, global_p1)
+                    measure_data = np.real(spec_phased)
+                    
+                 else: # "Magnitude"
+                    measure_data = np.abs(spec)
                  
                  current_time = start_iter / self.fs
                  
                  # Prepare next iteration updates
                  next_indices_update = {}
 
-                 # 3. Measure All Peaks
+                 # 4. Measure All Peaks
                  for f_key in curve_data.keys():
                      # Use current tracked index
                      idx_center = current_peak_indices[f_key]
@@ -357,8 +382,8 @@ class BatchRelaxationWorker(QThread):
                      idx_end = min(N, idx_center + search_r + 1)
                      
                      if idx_end > idx_start:
-                        segment_view = spec_mag[idx_start:idx_end]
-                        peak_amp = np.max(segment_view)
+                        segment_view = measure_data
+                        segment_view = spec_mag[idxnt_view)
                         
                         # Logic: If tracking, find local max index to update center
                         current_peak_val_hz = f_key
@@ -805,6 +830,17 @@ class MainWindow(QMainWindow):
         relax_layout.addWidget(self.spin_relax_start)
         
         self.lbl_relax_end = QLabel("End:")
+        # Measure Mode
+        measure_layout = QHBoxLayout()
+        measure_layout.addWidget(QLabel("Measure Mode:"))
+        self.combo_measure_mode = QComboBox()
+        self.combo_measure_mode.addItems(["Magnitude", "Real (Fixed Phase)", "Real (Auto-Phased)"])
+        self.combo_measure_mode.setToolTip("Select how to measure peak height.\n'Real (Auto-Phased)' recalibrates phase at EACH time step.")
+        # Trigger re-analysis for current selected peak if changed
+        self.combo_measure_mode.currentIndexChanged.connect(self.request_analysis_update)
+        measure_layout.addWidget(self.combo_measure_mode)
+        relax_layout.addLayout(measure_layout)
+
         relax_layout.addWidget(self.lbl_relax_end)
         self.spin_relax_end = QDoubleSpinBox()
         self.spin_relax_end.setRange(0, 500000)
@@ -1291,7 +1327,21 @@ class MainWindow(QMainWindow):
         else:
             self.ax_evo.text(0.5, 0.5, "Click a peak to analyze", ha='center', va='center')
         
-        self.canvas_evo.draw()
+        sequest_analysis_update(self):
+        """Called when settings change and we want to refresh the SINGLE peak analysis."""
+        # Only if we are in Relaxation/Dephasing mode
+        mode_text = self.combo_analysis_mode.currentText()
+        if not (mode_text.startswith("Relaxation") or mode_text.startswith("Dephasing")):
+            return
+            
+        # We need the last selected frequency. 
+        # But we don't store it explicitly in a variable yet, except locally in on_pick.
+        # Let's check if we can infer it or if we should store it.
+        # Storing last_selected_freq is good practice.
+        if hasattr(self, 'last_selected_freq') and self.last_selected_freq is not None:
+             self.run_relaxation_analysis(self.last_selected_freq)
+
+    def relf.canvas_evo.draw()
 
     def run_loading(self):
         if not self.folder_paths:
@@ -1680,9 +1730,12 @@ class MainWindow(QMainWindow):
         self.canvas_spec.draw()
         
     def on_pick(self, event):
-        ind = event.ind[0] # Index within the collection (scatter plot)
-        # Identify which collection was clicked
-        # This is tricky with multiple scatters.
+        ind freq = closest_row['Freq_Hz']
+            self.last_selected_freq = freq # Store for re-runs
+            
+            current_mode = self.combo_analysis_mode.currentText()
+            if current_mode.startswith("Relaxation") or current_mode.startswith("Dephasing"):
+                self.run_relaxation_analysis(freq
         # Simplified: We find the closest candidate to the click X coordinate
         
         click_x = event.mouseevent.xdata
@@ -1730,6 +1783,7 @@ class MainWindow(QMainWindow):
              
         points = self.spin_relax_points.value()
         zero_fill_front = self.chk_relax_zerofill.isChecked()
+        measure_mode = self.combo_measure_mode.currentText()
         
         self.relax_worker = RelaxationWorker(
             self.raw_avg_data, 
@@ -1739,7 +1793,8 @@ class MainWindow(QMainWindow):
             t_start=t_start,
             t_end=t_end,
             points=points,
-            zero_fill_front=zero_fill_front
+            zero_fill_front=zero_fill_front,
+            measure_mode=measure_mode
         )
         # Need sampling rate. self.loader_worker might be gone or recycled.
         # But we stored sampling_rate in on_loading_finished?
