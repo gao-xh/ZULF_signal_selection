@@ -1877,11 +1877,15 @@ class MainWindow(QMainWindow):
         # 6. Plot Layout (GridSpec)
         self.fig_stft.clear()
         
-        # Define Grid: [Spectrogram (85%), Side Spectrum (15%)]
-        gs = self.fig_stft.add_gridspec(1, 2, width_ratios=[6, 1], wspace=0.02)
+        # Define Grid: [Side Spectrum (15%), Spectrogram (85%)] swapped positions
+        # Increased wspace slightly for labels
+        gs = self.fig_stft.add_gridspec(1, 2, width_ratios=[1, 6], wspace=0.05)
         
-        self.ax_stft = self.fig_stft.add_subplot(gs[0])
-        ax_side = self.fig_stft.add_subplot(gs[1], sharey=self.ax_stft)
+        # Axis 1: Side Spectrum (Left)
+        ax_side = self.fig_stft.add_subplot(gs[0])
+        
+        # Axis 2: Spectrogram (Right) - Share Y with Side Spectrum
+        self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=ax_side)
         
         # Calculate Log Scale
         if self.chk_spec_log.isChecked():
@@ -1901,36 +1905,52 @@ class MainWindow(QMainWindow):
             vmax = np.max(cmap_data)
             side_profile = np.mean(Sxx, axis=1)
 
-        # Plot Heatmap
+        # Plot Heatmap (Right)
+        # We assume f and t are correct for pcolormesh
         mesh = self.ax_stft.pcolormesh(t, f, cmap_data, shading='auto', cmap='inferno', vmin=vmin, vmax=vmax)
         
-        # Plot Side Profile
+        # Plot Side Profile (Left)
+        # Plot Frequency on Y, Amplitude on X
         ax_side.plot(side_profile, f, 'k-', linewidth=0.8)
         fill_base = np.min(side_profile)
         ax_side.fill_betweenx(f, fill_base, side_profile, color='gray', alpha=0.3)
         
-        # Styling Side Plot
-        plt.setp(ax_side.get_yticklabels(), visible=False) 
+        # Styling Side Plot (The Y-axis Labels belong here now)
         ax_side.grid(True, alpha=0.3)
-        ax_side.set_xlabel("Avg")
+        ax_side.set_xlabel("Avg Amp")
+        ax_side.invert_xaxis() # Optional: Invert so it grows towards the left? 
+        # Standard: Grows to Right. But since it's on the left, maybe grow to the left (mirror)?
+        # Let's keep standard (0 -> Max) for readability first. 
+        # Actually user complained it "looks different". 
+        # Let's NOT invert for now. 0 on left, Max on right.
+        ax_side.invert_xaxis() # Let's Invert it so "peaks" point towards the spectrum? No that's weird.
+        # Undo invert.
+        ax_side.set_xlim(auto=True)
+        # Make sure X axis is normal
+        if ax_side.get_xlim()[0] > ax_side.get_xlim()[1]: # if inverted
+             ax_side.invert_xaxis()
+
+        # Labels
+        mode_str = " (|Hz|)" if is_folded else " (Hz)"
+        ax_side.set_ylabel(f"Frequency{mode_str}")
+        
+        # Styling Heatmap (Remove Y Labels as they are on ax_side now)
+        plt.setp(self.ax_stft.get_yticklabels(), visible=False)
+        self.ax_stft.set_xlabel("Time (s)")
+        self.ax_stft.set_title(f"Spectrogram (Win={nperseg})")
 
         # Limits
         f_min = self.freq_min.value()
         f_max = self.freq_max.value()
         
         if is_folded:
-             # If folded, we only show positive. Ensure min is at least 0.
              if f_min < 0: f_min = 0
-             self.ax_stft.set_ylabel("Frequency (|Hz|)")
-        else:
-             self.ax_stft.set_ylabel("Frequency (Hz)")
              
-        self.ax_stft.set_ylim(f_min, f_max)
-        self.ax_stft.set_title(f"Spectrogram ({mode_label}, Win={nperseg})")
-        self.ax_stft.set_xlabel("Time (s)")
+        # Set Limits on the Shared Axis (ax_side controls Y)
+        ax_side.set_ylim(f_min, f_max)
         
-        # Colorbar - attach to side axes so it sits on the right
-        self._cbar_stft = self.fig_stft.colorbar(mesh, ax=ax_side, label=cbar_label)
+        # Colorbar - attach to Spectrogram axis (Right side)
+        self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
         
         self.canvas_stft.draw()
         
