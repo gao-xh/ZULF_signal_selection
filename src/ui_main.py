@@ -740,6 +740,42 @@ class MainWindow(QMainWindow):
         self.btn_reprocess = QPushButton("Refresh Processing")
         self.btn_reprocess.clicked.connect(self.run_processing)
         proc_tab_layout.addWidget(self.btn_reprocess)
+        
+        # --- Spectrogram Controls ---
+        spec_group = QGroupBox("Spectrogram")
+        spec_layout_box = QVBoxLayout()
+        spec_layout_box.setContentsMargins(2, 2, 2, 2)
+        
+        # Button
+        self.btn_show_spectrogram = QPushButton("Show Spectrogram")
+        self.btn_show_spectrogram.clicked.connect(self.update_spectrogram)
+        spec_layout_box.addWidget(self.btn_show_spectrogram)
+        
+        # Params Row
+        row_spec = QHBoxLayout()
+        row_spec.addWidget(QLabel("Win:"))
+        self.combo_spec_window = QComboBox()
+        # Options: (Label, NFFT)
+        self.combo_spec_window.addItem("High Time Res (256)", 256)
+        self.combo_spec_window.addItem("Balanced (1024)", 1024)
+        self.combo_spec_window.addItem("High Freq Res (4096)", 4096)
+        self.combo_spec_window.setCurrentIndex(1) # Default Balanced
+        row_spec.addWidget(self.combo_spec_window)
+        
+        self.chk_spec_abs = QCheckBox("Abs(Freq)")
+        self.chk_spec_abs.setToolTip("Take absolute value of frequency axis (Mirror negative freqs to positive)")
+        self.chk_spec_abs.setChecked(False)
+        row_spec.addWidget(self.chk_spec_abs)
+
+        self.chk_spec_log = QCheckBox("Log(dB)")
+        self.chk_spec_log.setChecked(True)
+        row_spec.addWidget(self.chk_spec_log)
+        
+        spec_layout_box.addLayout(row_spec)
+        spec_group.setLayout(spec_layout_box)
+        proc_tab_layout.addWidget(spec_group)
+        # ----------------------------
+
         proc_tab_layout.addStretch()
         
         self.tabs_control.addTab(self.tab_process, "Processing")
@@ -1025,17 +1061,16 @@ class MainWindow(QMainWindow):
 
         right_splitter.addWidget(spec_container)
         
-        # Bottom: Evolution/Analysis Plots
-        evo_container = QWidget()
-        evo_layout = QVBoxLayout(evo_container)
+        # Bottom: Tabs for Analysis & Spectrogram
+        self.tabs_analysis = QTabWidget()
+
+        # --- Tab 1: T2* Analysis ---
+        self.tab_analysis_results = QWidget()
+        ana_tab_layout = QVBoxLayout(self.tab_analysis_results)
         
-        # Only Instruction Label here now
-        evo_layout.addWidget(QLabel("Analysis Results:"))
-        
-        # Plot Area
         self.ana_splitter = QSplitter(Qt.Horizontal)
         
-        # Plot 1
+        # Plot 1 (T2* Map)
         self.plot_container_1 = QWidget()
         l_1 = QVBoxLayout(self.plot_container_1)
         l_1.setContentsMargins(0,0,0,0)
@@ -1047,7 +1082,7 @@ class MainWindow(QMainWindow):
         l_1.addWidget(self.toolbar_evo)
         l_1.addWidget(self.canvas_evo)
         
-        # Plot 2
+        # Plot 2 (Detail Curve)
         self.plot_container_2 = QWidget()
         l_2 = QVBoxLayout(self.plot_container_2)
         l_2.setContentsMargins(0,0,0,0)
@@ -1062,9 +1097,27 @@ class MainWindow(QMainWindow):
         self.ana_splitter.addWidget(self.plot_container_1)
         self.ana_splitter.addWidget(self.plot_container_2)
         self.plot_container_2.hide()
+        
+        ana_tab_layout.addWidget(self.ana_splitter)
+        self.tabs_analysis.addTab(self.tab_analysis_results, "T2* Analysis")
 
-        evo_layout.addWidget(self.ana_splitter, stretch=1)
-        right_splitter.addWidget(evo_container)
+        # --- Tab 2: Spectrogram ---
+        self.tab_spectrogram = QWidget()
+        spec_tab_layout = QVBoxLayout(self.tab_spectrogram)
+        spec_tab_layout.setContentsMargins(0,0,0,0)
+        
+        self.fig_stft = Figure(figsize=(5, 3))
+        self.canvas_stft = FigureCanvas(self.fig_stft)
+        self.ax_stft = self.fig_stft.add_subplot(111)
+        self.canvas_stft.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.toolbar_stft = NavigationToolbar(self.canvas_stft, self.tab_spectrogram)
+        
+        spec_tab_layout.addWidget(self.toolbar_stft)
+        spec_tab_layout.addWidget(self.canvas_stft)
+        
+        self.tabs_analysis.addTab(self.tab_spectrogram, "Spectrogram")
+
+        right_splitter.addWidget(self.tabs_analysis)
         
         self.main_splitter.addWidget(right_splitter)
         self.main_splitter.setStretchFactor(0, 0) 
@@ -1745,6 +1798,141 @@ class MainWindow(QMainWindow):
         # It causes figure height jitter/collapse when updating frequently.
         # self.fig_spec.tight_layout() 
         self.canvas_spec.draw()
+
+    def update_spectrogram(self):
+        """Compute and display Short-Time Fourier Transform"""
+        import scipy.signal
+        import scipy.fft
+        from matplotlib.gridspec import GridSpec
+        import matplotlib.pyplot as plt
+        
+        # 1. Check Data
+        if self.current_processed_time is None:
+            QMessageBox.warning(self, "No Data", "Please process data first.")
+            return
+            
+        # 2. Switch Tab
+        self.tabs_analysis.setCurrentIndex(1) # Index 1 is Spectrogram
+        
+        # 3. Always work with COMPLEX data
+        data_in = self.current_processed_time
+        
+        # 4. Get Parameters
+        fs = self.loader_sampling_rate
+        nperseg = self.combo_spec_window.currentData() 
+        if not nperseg: nperseg = 1024
+        nperseg = int(nperseg)
+        noverlap = int(nperseg * 0.9) # 90% overlap
+        
+        try:
+            # return_onesided=False ensures we get both Negative and Positive frequencies
+            f, t, Zxx = scipy.signal.stft(
+                data_in, 
+                fs=fs, 
+                window='hann', 
+                nperseg=nperseg, 
+                noverlap=noverlap, 
+                return_onesided=False 
+            )
+            
+            f = scipy.fft.fftshift(f)
+            Zxx = scipy.fft.fftshift(Zxx, axes=0)
+            Sxx = np.abs(Zxx) 
+
+            # --- Abs(Freq) Folding Logic ---
+            # Default to Full Spectrum unless checked
+            is_folded = False
+            if hasattr(self, 'chk_spec_abs') and self.chk_spec_abs.isChecked():
+                is_folded = True
+                
+            if is_folded:
+                # Fold negative frequencies onto positive ones
+                # Find index closest to 0
+                idx_0 = np.argmin(np.abs(f)) 
+                
+                # Positive side (0 to +Nyquist)
+                f_folded = f[idx_0:]
+                S_folded = Sxx[idx_0:, :].copy()
+                
+                # Negative side (flipped)
+                S_neg_flipped = np.flipud(Sxx[:idx_0, :])
+                
+                # Element-wise Max
+                limit = min(len(S_folded), len(S_neg_flipped))
+                # Skip DC (index 0 of f_folded) for the flip addition usually, or just overlay
+                # S_neg_flipped corresponds to -1, -2...
+                # S_folded[1:] corresponds to +1, +2...
+                S_folded[1:limit+1] = np.maximum(S_folded[1:limit+1], S_neg_flipped[:limit])
+                
+                f = f_folded
+                Sxx = S_folded
+                mode_label = "Folded (|Freq|)"
+            else:
+                mode_label = "Full Spectrum"
+
+        except Exception as e:
+            QMessageBox.critical(self, "STFT Error", str(e))
+            return
+        
+        # 6. Plot Layout (GridSpec)
+        self.fig_stft.clear()
+        
+        # Define Grid: [Spectrogram (85%), Side Spectrum (15%)]
+        gs = self.fig_stft.add_gridspec(1, 2, width_ratios=[6, 1], wspace=0.02)
+        
+        self.ax_stft = self.fig_stft.add_subplot(gs[0])
+        ax_side = self.fig_stft.add_subplot(gs[1], sharey=self.ax_stft)
+        
+        # Calculate Log Scale
+        if self.chk_spec_log.isChecked():
+            Sxx_dB = 20 * np.log10(Sxx + 1e-12)
+            cmap_data = Sxx_dB
+            cbar_label = "Amplitude (dB)"
+            vmin = np.max(cmap_data) - 80 
+            vmax = np.max(cmap_data)
+            
+            # Side Spectrum: Log of Mean
+            mean_mag = np.mean(Sxx, axis=1)
+            side_profile = 20 * np.log10(mean_mag + 1e-12)
+        else:
+            cmap_data = Sxx
+            cbar_label = "Amplitude"
+            vmin = 0
+            vmax = np.max(cmap_data)
+            side_profile = np.mean(Sxx, axis=1)
+
+        # Plot Heatmap
+        mesh = self.ax_stft.pcolormesh(t, f, cmap_data, shading='auto', cmap='inferno', vmin=vmin, vmax=vmax)
+        
+        # Plot Side Profile
+        ax_side.plot(side_profile, f, 'k-', linewidth=0.8)
+        fill_base = np.min(side_profile)
+        ax_side.fill_betweenx(f, fill_base, side_profile, color='gray', alpha=0.3)
+        
+        # Styling Side Plot
+        plt.setp(ax_side.get_yticklabels(), visible=False) 
+        ax_side.grid(True, alpha=0.3)
+        ax_side.set_xlabel("Avg")
+
+        # Limits
+        f_min = self.freq_min.value()
+        f_max = self.freq_max.value()
+        
+        if is_folded:
+             # If folded, we only show positive. Ensure min is at least 0.
+             if f_min < 0: f_min = 0
+             self.ax_stft.set_ylabel("Frequency (|Hz|)")
+        else:
+             self.ax_stft.set_ylabel("Frequency (Hz)")
+             
+        self.ax_stft.set_ylim(f_min, f_max)
+        self.ax_stft.set_title(f"Spectrogram ({mode_label}, Win={nperseg})")
+        self.ax_stft.set_xlabel("Time (s)")
+        
+        # Colorbar - attach to side axes so it sits on the right
+        self._cbar_stft = self.fig_stft.colorbar(mesh, ax=ax_side, label=cbar_label)
+        
+        self.canvas_stft.draw()
         
     def on_pick(self, event):
         ind = event.ind[0] # Index within the collection (scatter plot)
