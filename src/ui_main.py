@@ -764,7 +764,7 @@ class MainWindow(QMainWindow):
         
         self.chk_spec_abs = QCheckBox("Abs(Freq)")
         self.chk_spec_abs.setToolTip("Take absolute value of frequency axis (Mirror negative freqs to positive)")
-        self.chk_spec_abs.setChecked(False)
+        self.chk_spec_abs.setChecked(True)
         row_spec.addWidget(self.chk_spec_abs)
 
         self.chk_spec_log = QCheckBox("Log(dB)")
