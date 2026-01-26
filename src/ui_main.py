@@ -1920,14 +1920,13 @@ class MainWindow(QMainWindow):
         
         # Styling Side Plot (The Y-axis Labels belong here now)
         ax_side.grid(True, alpha=0.3)
-        ax_side.set_xlabel("Avg Amp")
-        ax_side.invert_xaxis() # Optional: Invert so it grows towards the left? 
-        # Standard: Grows to Right. But since it's on the left, maybe grow to the left (mirror)?
-        # Let's keep standard (0 -> Max) for readability first. 
-        # Actually user complained it "looks different". 
-        # Let's NOT invert for now. 0 on left, Max on right.
-        ax_side.invert_xaxis() # Let's Invert it so "peaks" point towards the spectrum? No that's weird.
-        # Undo invert.
+        unit_str = "(dB)" if self.chk_spec_log.isChecked() else ""
+        ax_side.set_xlabel(f"Avg Amp {unit_str}")
+        
+        # Invert logic consideration:
+        # Standard: 0 -> Max. User has 0 on left, Max on right. 
+        # But for dB, -100 is left, -10 is right. This is correct.
+        
         ax_side.set_xlim(auto=True)
         # Make sure X axis is normal
         if ax_side.get_xlim()[0] > ax_side.get_xlim()[1]: # if inverted
