@@ -13,15 +13,15 @@ from src.config import (
     DEFAULT_APOD_T2STAR, DEFAULT_SVD_RANK, DEFAULT_ENABLE_SVD
 )
 
+# Import new auto-phase module
+from src.auto_phase import apply_phase_correction, auto_phase_entropy
+
 # Add references to path to allow importing ZULF libraries
 if str(REFERENCES_DIR) not in sys.path:
     sys.path.append(str(REFERENCES_DIR))
 
 # Try importing from reference library
 try:
-    from nmr_processing_lib.processing.zulf_algorithms import (
-        apply_phase_correction, auto_phase
-    )
     from nmr_processing_lib.processing.filtering import svd_denoising
     HAS_REF_LIB = True
 except ImportError:
@@ -148,31 +148,18 @@ class Processor:
         # But this function 'process_fid' is intended for batch processing usually.
         # We assume params['p0'] and params['p1'] are set correctly.
         
-        if HAS_REF_LIB:
-            spectrum = apply_phase_correction(spectrum, params.get('p0', 0), params.get('p1', 0))
-        else:
-            # Simple fallback
-            p0 = np.deg2rad(params.get('p0', 0))
-            p1 = np.deg2rad(params.get('p1', 0))
-            # Linear phase: phi = p0 + p1 * (freq / max_freq) ? 
-            # Reference implementation usually: phase = p0 + p1 * (index / N)
-            # Let's check ZULF algorithms if we could... but assuming fallback:
-            # Standard NMR: p1 is usually delay. 
-            # Let's stick to 0 phase if lib missing for now.
-            pass
+        # Use local implementation of apply_phase_correction
+        spectrum = apply_phase_correction(spectrum, params.get('p0', 0), params.get('p1', 0))
             
         return freqs, spectrum
 
     @staticmethod
     def auto_phase_spectrum(spectrum):
         """
-        Calculate optimal phase parameters using the reference algorithm.
+        Calculate optimal phase parameters using the new Minimum Entropy algorithm.
         Returns: (p0, p1) in degrees
         """
-        if HAS_REF_LIB:
-            return auto_phase(spectrum)
-        else:
-            return 0.0, 0.0
+        return auto_phase_entropy(spectrum)
 
 class CurveFitter:
     """

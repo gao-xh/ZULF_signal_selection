@@ -99,3 +99,26 @@
 *   [ ] Create `src/validator.py` with regression logic.
 *   [ ] Port key processing functions (FFT, Phase) to `src/processing.py`.
 *   [ ] Create a demo notebook to visualize Signal vs Noise evolution.
+
+### 7. Algorithm Technical Notes (Updated Jan 2026)
+
+#### A. Oscillation Removal (Filtered T2*)
+*   **Objective**: Remove low-frequency modulations (e.g., J-coupling beats, ~7Hz) from the T2* decay curve to analyze the pure envelope.
+*   **Method**: **Adaptive Moving Average**.
+    *   We abandoned FFT/Butterworth filters because they introduced significant edge artifacts (ringing) and struggled with short data segments.
+    *   **Logic**:
+        1.  Detect dominant oscillation frequency ($f_{osc}$) via detrended FFT.
+        2.  Calculate window size: $W = 3 \times (f_s / f_{osc})$ (spanning 3 full cycles for max cancellation).
+        3.  **Constraint**: Window size is capped at **15%** of data length to prevent over-smoothing the underlying exponential decay.
+    *   **Usage**: Applied in `CurveFitter.remove_oscillation_fft`.
+
+#### B. Robust T2* Fitting Strategy
+*   **Problem**: Flat or slowly decaying signals were often misfitted as "short T2 decay + huge DC offset" (e.g., Signal=100 -> Fit: $A=1000, C=100, T2=1ms$).
+*   **Solution**: **Noise-Aware Constraint on Offset (C)**.
+*   **Implementation**:
+    *   Model: $y(t) = A \cdot e^{-(t-t_{start})/T_2} + C$
+    *   **Constraint**: The baseline offset $C$ is **strictly bounded** by the noise floor.
+        *   `bounds = ([0, 0, 0], [inf, inf, noise_threshold * 1.5])`
+    *   **Source of Truth**: The `noise_threshold` is passed down from the UI (User's Peak Detection Threshold) to the backend.
+*   **Result**: Forces the optimizer to interpret flat signals as "Long T2" rather than "High Offset", ensuring physical validity.
+

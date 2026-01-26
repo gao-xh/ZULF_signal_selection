@@ -666,6 +666,12 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.p1_slider)
         self.p1_slider.valueChanged.connect(self.request_processing_update)
         
+        # Auto Phase Button
+        self.btn_auto_phase = QPushButton("Auto Phase (Entropy)")
+        self.btn_auto_phase.setToolTip("Automatically correct phase using Minimum Entropy algorithm")
+        self.btn_auto_phase.clicked.connect(self.run_auto_phase)
+        proc_layout.addWidget(self.btn_auto_phase)
+        
         proc_group.setLayout(proc_layout)
         proc_tab_layout.addWidget(proc_group)
         
@@ -1327,6 +1333,63 @@ class MainWindow(QMainWindow):
         self.proc_worker.finished.connect(self.on_processing_finished)
         self.proc_worker.error.connect(self.on_error)
         self.proc_worker.start()
+
+    def run_auto_phase(self):
+        """
+        Execute Auto-Phasing:
+        1. Get unphased spectrum (run pipeline with p0=p1=0).
+        2. Calculate entropy-minimized phase parameters.
+        3. Update UI.
+        """
+        if self.raw_avg_data is None:
+            QMessageBox.warning(self, "No Data", "Please load data first.")
+            return
+
+        self.statusBar().showMessage("Running Auto Phase (Minimum Entropy)...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        try:
+            # 1. Get current params but reset phase to 0 to get raw spectrum
+            # We want to find the phase of the *current* signal state (after SVD/Savgol etc)
+            params = self._get_process_params()
+            params['p0'] = 0
+            params['p1'] = 0
+            
+            # 2. Get unphased spectrum
+            # We can run process_fid in the main thread for this single operation 
+            # as it shouldn't block for too long (SVD is already done or fast enough?)
+            # If SVD is heavy, this might freeze UI.
+            # But auto_phase itself takes time too. 
+            # Ideally should be a Worker, but for simplicity let's try direct first.
+            
+            processor = Processor()
+            _, raw_spec = processor.process_fid(self.raw_avg_data, params, self.loader_sampling_rate)
+            
+            # 3. Calculate optimal phase
+            best_p0, best_p1 = processor.auto_phase_spectrum(raw_spec)
+            
+            # 4. Update UI
+            # Block signals to prevent intermediate re-processing
+            self.p0_slider.blockSignals(True)
+            self.p1_slider.blockSignals(True)
+            
+            self.p0_slider.spinbox.setValue(float(best_p0))
+            self.p1_slider.spinbox.setValue(float(best_p1))
+            
+            self.p0_slider.blockSignals(False)
+            self.p1_slider.blockSignals(False)
+            
+            # Trigger final update (apply the new phase)
+            self.run_processing()
+            
+            msg = f"Auto Phase Converged: p0={best_p0:.1f}°, p1={best_p1:.1f}°"
+            self.statusBar().showMessage(msg)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Auto Phase Failed", str(e))
+            self.statusBar().showMessage("Auto Phase Error.")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def on_processing_finished(self, freqs, spec, time_data):
         self.current_freqs = freqs
