@@ -386,8 +386,8 @@ class BatchRelaxationWorker(QThread):
                      idx_end = min(N, idx_center + search_r + 1)
                      
                      if idx_end > idx_start:
-                        segment_view = measure_data
-                        segment_view = spec_mag[idxnt_view)
+                        segment_view = measure_data[idx_start:idx_end]
+                        peak_amp = np.max(segment_view)
                         
                         # Logic: If tracking, find local max index to update center
                         current_peak_val_hz = f_key
@@ -701,6 +701,38 @@ class MainWindow(QMainWindow):
         self.btn_auto_phase.clicked.connect(self.run_auto_phase)
         proc_layout.addWidget(self.btn_auto_phase)
         
+        # View Mode / Data Mode (Global)
+        self.view_mode_group = QGroupBox("Processing Target (Mode)")
+        view_mode_layout = QHBoxLayout()
+        view_mode_layout.setContentsMargins(2, 2, 2, 2)
+        
+        self.btn_view_mag = QPushButton("Mag")
+        self.btn_view_mag.setCheckable(True)
+        self.btn_view_mag.setChecked(True)
+        self.btn_view_mag.clicked.connect(self.update_view_mode)
+        
+        self.btn_view_real = QPushButton("Real")
+        self.btn_view_real.setCheckable(True)
+        self.btn_view_real.clicked.connect(self.update_view_mode)
+        
+        self.btn_view_imag = QPushButton("Imag")
+        self.btn_view_imag.setCheckable(True)
+        self.btn_view_imag.clicked.connect(self.update_view_mode)
+        
+        view_mode_layout.addWidget(self.btn_view_mag)
+        view_mode_layout.addWidget(self.btn_view_real)
+        view_mode_layout.addWidget(self.btn_view_imag)
+        
+        self.view_buttons = [self.btn_view_mag, self.btn_view_real, self.btn_view_imag]
+        
+        self.chk_view_abs = QCheckBox("Abs")
+        self.chk_view_abs.setChecked(False)
+        self.chk_view_abs.stateChanged.connect(self.update_view_mode)
+        view_mode_layout.addWidget(self.chk_view_abs)
+        
+        self.view_mode_group.setLayout(view_mode_layout)
+        proc_layout.addWidget(self.view_mode_group)
+        
         proc_group.setLayout(proc_layout)
         proc_tab_layout.addWidget(proc_group)
         
@@ -834,16 +866,11 @@ class MainWindow(QMainWindow):
         relax_layout.addWidget(self.spin_relax_start)
         
         self.lbl_relax_end = QLabel("End:")
-        # Measure Mode
-        measure_layout = QHBoxLayout()
-        measure_layout.addWidget(QLabel("Measure Mode:"))
-        self.combo_measure_mode = QComboBox()
-        self.combo_measure_mode.addItems(["Magnitude", "Real (Fixed Phase)", "Real (Auto-Phased)"])
-        self.combo_measure_mode.setToolTip("Select how to measure peak height.\n'Real (Auto-Phased)' recalibrates phase at EACH time step.")
-        # Trigger re-analysis for current selected peak if changed
-        self.combo_measure_mode.currentIndexChanged.connect(self.request_analysis_update)
-        measure_layout.addWidget(self.combo_measure_mode)
-        relax_layout.addLayout(measure_layout)
+        # Auto-Phase Logic for Analysis (New)
+        self.chk_auto_phase_step = QCheckBox("Auto-Phase Each Step")
+        self.chk_auto_phase_step.setToolTip("Run Minimum Entropy Phasing for EVERY time slice before measurement.\nRequires 'Real' mode selected in Processing tab.")
+        self.chk_auto_phase_step.stateChanged.connect(self.request_analysis_update)
+        relax_layout.addWidget(self.chk_auto_phase_step)
 
         relax_layout.addWidget(self.lbl_relax_end)
         self.spin_relax_end = QDoubleSpinBox()
@@ -992,30 +1019,9 @@ class MainWindow(QMainWindow):
         range_group.setLayout(range_layout)
         spec_layout.addWidget(range_group)
 
-        # View Mode
-        view_mode_group = QGroupBox("Component")
-        view_mode_layout = QHBoxLayout()
-        view_mode_layout.setContentsMargins(5, 5, 5, 5)
-        self.btn_view_mag = QPushButton("Mag")
-        self.btn_view_mag.setCheckable(True)
-        self.btn_view_mag.setChecked(True)
-        self.btn_view_mag.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_mag)
-        self.btn_view_real = QPushButton("Real")
-        self.btn_view_real.setCheckable(True)
-        self.btn_view_real.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_real)
-        self.btn_view_imag = QPushButton("Imag")
-        self.btn_view_imag.setCheckable(True)
-        self.btn_view_imag.clicked.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.btn_view_imag)
-        self.view_buttons = [self.btn_view_mag, self.btn_view_real, self.btn_view_imag]
-        self.chk_view_abs = QCheckBox("Abs")
-        self.chk_view_abs.setChecked(False)
-        self.chk_view_abs.stateChanged.connect(self.update_view_mode)
-        view_mode_layout.addWidget(self.chk_view_abs)
-        view_mode_group.setLayout(view_mode_layout)
-        spec_layout.addWidget(view_mode_group)
+        # View Mode - Removed from here
+        # view_mode_group = QGroupBox("Component")
+        # ... (Moved to Processing Tab)
 
         right_splitter.addWidget(spec_container)
         
@@ -1331,7 +1337,9 @@ class MainWindow(QMainWindow):
         else:
             self.ax_evo.text(0.5, 0.5, "Click a peak to analyze", ha='center', va='center')
         
-        sequest_analysis_update(self):
+        self.canvas_evo.draw()
+
+    def request_analysis_update(self):
         """Called when settings change and we want to refresh the SINGLE peak analysis."""
         # Only if we are in Relaxation/Dephasing mode
         mode_text = self.combo_analysis_mode.currentText()
@@ -1344,8 +1352,6 @@ class MainWindow(QMainWindow):
         # Storing last_selected_freq is good practice.
         if hasattr(self, 'last_selected_freq') and self.last_selected_freq is not None:
              self.run_relaxation_analysis(self.last_selected_freq)
-
-    def relf.canvas_evo.draw()
 
     def run_loading(self):
         if not self.folder_paths:
@@ -1576,7 +1582,12 @@ class MainWindow(QMainWindow):
                 btn.setChecked(False)
         sender.setChecked(True)
         
-        self.plot_spectrum_traffic_light() # Changing mode (Real/Imag) naturally requires re-scale
+        # 1. Update Plot 
+        self.plot_spectrum_traffic_light() 
+        
+        # 2. Trigger Re-Analysis if "Analysis" tab is active and we have a selection
+        # This implements "Global Data Mode": Change mode -> Change Analysis result
+        self.request_analysis_update()
 
     def plot_spectrum_traffic_light(self, preserve_view=False):
         # Capture current Y-lim before clearing if preserving view
@@ -1587,25 +1598,27 @@ class MainWindow(QMainWindow):
         if self.current_freqs is None or self.current_spec is None:
             self.canvas_spec.draw()
             return
-        
-        # Determine data to plot based on view mode
+
+        # Determine data to plot based on view mode (Global Mode)
         spec_data = self.current_spec
         mode_label = "Magnitude"
         
-        if self.btn_view_real.isChecked():
-            # Usually we want Real component for Phasing
+        # Default keys for safety
+        is_real = self.btn_view_real.isChecked() if hasattr(self, 'btn_view_real') else False
+        is_imag = self.btn_view_imag.isChecked() if hasattr(self, 'btn_view_imag') else False
+        is_abs = self.chk_view_abs.isChecked() if hasattr(self, 'chk_view_abs') else False
+
+        if is_real:
             plot_data = np.real(spec_data)
             mode_label = "Real"
-        elif self.btn_view_imag.isChecked():
+        elif is_imag:
             plot_data = np.imag(spec_data)
             mode_label = "Imaginary"
         else:
-            # Default Magnitude
             plot_data = np.abs(spec_data)
             mode_label = "Magnitude"
 
-        # Apply absolute value if requested
-        if self.chk_view_abs.isChecked():
+        if is_abs:
             plot_data = np.abs(plot_data)
             mode_label += " (Abs)"
 
@@ -1734,12 +1747,9 @@ class MainWindow(QMainWindow):
         self.canvas_spec.draw()
         
     def on_pick(self, event):
-        ind freq = closest_row['Freq_Hz']
-            self.last_selected_freq = freq # Store for re-runs
-            
-            current_mode = self.combo_analysis_mode.currentText()
-            if current_mode.startswith("Relaxation") or current_mode.startswith("Dephasing"):
-                self.run_relaxation_analysis(freq
+        ind = event.ind[0] # Index within the collection (scatter plot)
+        # Identify which collection was clicked
+        # This is tricky with multiple scatters.
         # Simplified: We find the closest candidate to the click X coordinate
         
         click_x = event.mouseevent.xdata
@@ -1748,6 +1758,19 @@ class MainWindow(QMainWindow):
         # Find closest candidate in dataframe
         df = self.current_results
         # Calculate distance
+        df['dist'] = abs(df['Freq_Hz'] - click_x)
+        closest_row = df.loc[df['dist'].idxmin()]
+        
+        # If reasonably close (e.g. 1Hz)
+        if closest_row['dist'] < 5.0:
+            freq = closest_row['Freq_Hz']
+            self.last_selected_freq = freq # Store for re-runs
+            
+            current_mode = self.combo_analysis_mode.currentText()
+            if current_mode.startswith("Relaxation") or current_mode.startswith("Dephasing"):
+                self.run_relaxation_analysis(freq)
+            else:
+                self.plot_evolution(closest_row['Index'])
         df['dist'] = abs(df['Freq_Hz'] - click_x)
         closest_row = df.loc[df['dist'].idxmin()]
         
@@ -1950,6 +1973,23 @@ class MainWindow(QMainWindow):
         self.ax_evo.text(0.5, 0.5, "Running Batch Analysis...", ha='center', va='center')
         self.canvas_evo.draw()
         
+        # Global Data Mode Logic
+        base_mode = "Magnitude"
+        if hasattr(self, 'btn_view_real') and self.btn_view_real.isChecked(): base_mode = "Real"
+        elif hasattr(self, 'btn_view_imag') and self.btn_view_imag.isChecked(): base_mode = "Imag"
+        
+        auto_phase = self.chk_auto_phase_step.isChecked() if hasattr(self, 'chk_auto_phase_step') else False
+        
+        if base_mode == "Real":
+            if auto_phase:
+                worker_mode = "Real (Auto-Phased)"
+            else:
+                worker_mode = "Real (Fixed Phase)"
+        elif base_mode == "Magnitude":
+            worker_mode = "Magnitude"
+        else:
+            worker_mode = "Magnitude"
+
         # Worker
         self.batch_worker = BatchRelaxationWorker(
             self.raw_avg_data,
@@ -1960,7 +2000,8 @@ class MainWindow(QMainWindow):
             zero_fill_front,
             use_tracking,
             track_win_hz,
-            noise_threshold=self.peak_thr.value() # Pass noise threshold
+            noise_threshold=self.peak_thr.value(), # Pass noise threshold
+            measure_mode=worker_mode
         )
         self.batch_worker.finished.connect(self.on_batch_analysis_finished)
         self.batch_worker.progress.connect(self.on_worker_progress)
