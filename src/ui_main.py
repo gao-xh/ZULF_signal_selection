@@ -1551,7 +1551,7 @@ class MainWindow(QMainWindow):
             return
             
         # Time Axis with Start Offset (Truncation)
-        trunc_start_pts = self.spin_trunc_start.value()
+        trunc_start_pts = self.trunc_slider.value()
         t_offset = trunc_start_pts / self.loader_sampling_rate
         
         t = (np.arange(len(self.current_processed_time)) / self.loader_sampling_rate) + t_offset
@@ -1849,7 +1849,7 @@ class MainWindow(QMainWindow):
             )
             
             # Apply Time Offset (Truncation)
-            trunc_start_pts = self.spin_trunc_start.value()
+            trunc_start_pts = self.trunc_slider.value()
             t_offset = trunc_start_pts / fs
             t = t + t_offset
             
