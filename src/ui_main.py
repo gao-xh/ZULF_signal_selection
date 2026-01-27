@@ -1974,6 +1974,11 @@ class MainWindow(QMainWindow):
 
     def on_spectrogram_click(self, event):
         """Handle clicks on Spectrogram/Side Profile to analyze T2* at that frequency"""
+        # Check if Navigation Toolbar is active (Zoom/Pan mode)
+        # If user is zooming/panning, we ignore the click for analysis
+        if self.toolbar_stft.mode:
+            return
+
         # Ensure click is within our axes (Main or Side)
         if event.inaxes not in self.fig_stft.axes:
             return
