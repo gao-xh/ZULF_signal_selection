@@ -1112,6 +1112,9 @@ class MainWindow(QMainWindow):
         self.canvas_stft.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.toolbar_stft = NavigationToolbar(self.canvas_stft, self.tab_spectrogram)
         
+        # Connect Click Event (T2* Analysis from Spectrogram)
+        self.canvas_stft.mpl_connect('button_press_event', self.on_spectrogram_click)
+        
         spec_tab_layout.addWidget(self.toolbar_stft)
         spec_tab_layout.addWidget(self.canvas_stft)
         
@@ -1872,6 +1875,11 @@ class MainWindow(QMainWindow):
                 mode_label = "Folded (|Freq|)"
             else:
                 mode_label = "Full Spectrum"
+                
+            # Store STFT data for interactivity (T2* analysis)
+            self.stft_f = f
+            self.stft_t = t
+            self.stft_Sxx = Sxx
 
         except Exception as e:
             QMessageBox.critical(self, "STFT Error", str(e))
@@ -1955,6 +1963,110 @@ class MainWindow(QMainWindow):
         self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
         
         self.canvas_stft.draw()
+
+    def on_spectrogram_click(self, event):
+        """Handle clicks on Spectrogram/Side Profile to analyze T2* at that frequency"""
+        # Ensure click is within our axes (Main or Side)
+        if event.inaxes not in self.fig_stft.axes:
+            return
+            
+        # We care about Y coordinate (Frequency) as both axes share Frequency on Y
+        target_freq = event.ydata
+        
+        if target_freq is None: 
+            return
+        
+        # Check if we have data
+        if not hasattr(self, 'stft_f') or self.stft_f is None: 
+            return
+
+        # Perform Analysis
+        self.analyze_stft_t2(target_freq)
+
+    def analyze_stft_t2(self, target_freq):
+        from scipy.stats import linregress
+        
+        # 1. Find nearest frequency index
+        # stft_f matches the rows of stft_Sxx
+        idx = (np.abs(self.stft_f - target_freq)).argmin()
+        actual_freq = self.stft_f[idx]
+        
+        # 2. Extract Data (Slice across time)
+        times = self.stft_t
+        amps = self.stft_Sxx[idx, :]
+        
+        # 3. Fit T2* (Exponential Decay)
+        # Strategy: Log-Linear Fit on the "tail" or significant data
+        
+        # A. Thresholding to avoid noise floor in fit
+        # Fit only points that are > 10% of max amplitude in this slice
+        max_amp = np.max(amps)
+        if max_amp == 0: return
+        
+        # Basic mask: > 10% max AND > 0
+        mask_fit = (amps > max_amp * 0.1)
+        
+        # B. Check if we have enough points
+        if np.sum(mask_fit) < 4:
+            self.statusBar().showMessage(f"Not enough data to fit T2* at {actual_freq:.1f}Hz")
+            return
+            
+        t_fit = times[mask_fit]
+        a_fit = amps[mask_fit]
+        
+        try:
+            # ln(y) = ln(A) - (1/T2)*t
+            # slope = -1/T2
+            slope, intercept, r_val, p_val, std_err = linregress(t_fit, np.log(a_fit))
+            
+            if slope < 0:
+                t2 = -1.0 / slope
+            else:
+                t2 = 0 # Growing signal?
+                
+            r2 = r_val**2
+            
+            # Generate Fit Line for Plotting (across full time range)
+            fit_curve = np.exp(intercept + slope * times)
+            
+        except Exception as e:
+            print(f"Fit Error: {e}")
+            t2 = 0
+            r2 = 0
+            fit_curve = np.zeros_like(times)
+
+        # 4. Switch to T2* Analysis Tab to show results
+        self.tabs_analysis.setCurrentIndex(0) # Index 0 is T2* Analysis
+        
+        # 5. Plot on ax_evo
+        self.ax_evo.clear()
+        
+        # Plot Raw Data
+        self.ax_evo.plot(times, amps, 'b-', alpha=0.5, label='STFT Magnitude')
+        self.ax_evo.scatter(t_fit, a_fit, c='orange', s=10, zorder=3, label='Points used for Fit')
+        
+        # Plot Fit
+        if t2 > 0:
+            label_fit = f'Fit T2*={t2*1000:.1f}ms (R2={r2:.2f})'
+            self.ax_evo.plot(times, fit_curve, 'r--', linewidth=2, label=label_fit)
+        
+        self.ax_evo.set_title(f"T2* Analysis @ {actual_freq:.1f} Hz (Spectrogram Slice)")
+        self.ax_evo.set_xlabel("Time (s)")
+        self.ax_evo.set_ylabel("Amplitude")
+        self.ax_evo.legend()
+        self.ax_evo.grid(True, alpha=0.3)
+        
+        # Store state for advanced tools (Envelope, etc.) if they want to use them later
+        # We mimic the structure used by plot_relaxation_results
+        self.current_decay_data = {
+            'times': times,
+            'amps': amps,
+            'ax': self.ax_evo,
+            'canvas': self.canvas_evo
+        }
+        
+        self.canvas_evo.draw()
+        self.statusBar().showMessage(f"Analyzed {actual_freq:.1f} Hz: T2* = {t2*1000:.1f} ms")
         
     def on_pick(self, event):
         ind = event.ind[0] # Index within the collection (scatter plot)
