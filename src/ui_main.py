@@ -1998,13 +1998,25 @@ class MainWindow(QMainWindow):
         # 3. Fit T2* (Exponential Decay)
         # Strategy: Log-Linear Fit on the "tail" or significant data
         
-        # A. Thresholding to avoid noise floor in fit
-        # Fit only points that are > 10% of max amplitude in this slice
+        # A. Peak Detection & Thresholding
         max_amp = np.max(amps)
         if max_amp == 0: return
         
-        # Basic mask: > 10% max AND > 0
-        mask_fit = (amps > max_amp * 0.1)
+        # Strategy: Ignore the "rising" part (from 0 to peak) typically caused by STFT windowing/startup
+        # Start fitting from the maximum point onwards.
+        idx_max = np.argmax(amps)
+        
+        # Create a mask for the "decay" portion only:
+        # 1. Index >= idx_max (Post-peak)
+        # 2. Amplitude > 10% of max (Avoid noise tail)
+        mask_fit = np.zeros_like(amps, dtype=bool)
+        
+        # Only consider points after the peak
+        decay_slice = amps[idx_max:]
+        mask_decay = (decay_slice > max_amp * 0.1)
+        
+        # Map back to full array
+        mask_fit[idx_max:] = mask_decay
         
         # B. Check if we have enough points
         if np.sum(mask_fit) < 4:
