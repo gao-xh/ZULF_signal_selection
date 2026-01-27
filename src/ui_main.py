@@ -1061,16 +1061,37 @@ class MainWindow(QMainWindow):
 
         right_splitter.addWidget(spec_container)
         
-        # Bottom: Tabs for Analysis & Spectrogram
-        self.tabs_analysis = QTabWidget()
+        # Bottom: Combined Analysis Area (Spectrogram + T2* Analysis)
+        # User requested side-by-side layout: Spectrogram Left, T2* Right
+        self.analysis_splitter = QSplitter(Qt.Horizontal)
 
-        # --- Tab 1: T2* Analysis ---
-        self.tab_analysis_results = QWidget()
-        ana_tab_layout = QVBoxLayout(self.tab_analysis_results)
+        # --- Panel 1: Spectrogram (Left) ---
+        self.panel_spectrogram = QWidget()
+        spec_tab_layout = QVBoxLayout(self.panel_spectrogram)
+        spec_tab_layout.setContentsMargins(0,0,0,0)
         
-        self.ana_splitter = QSplitter(Qt.Horizontal)
+        self.fig_stft = Figure(figsize=(5, 3))
+        self.canvas_stft = FigureCanvas(self.fig_stft)
+        self.ax_stft = self.fig_stft.add_subplot(111)
+        self.canvas_stft.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.toolbar_stft = NavigationToolbar(self.canvas_stft, self.panel_spectrogram)
         
-        # Plot 1 (T2* Map)
+        # Connect Click Event (T2* Analysis from Spectrogram)
+        self.canvas_stft.mpl_connect('button_press_event', self.on_spectrogram_click)
+        
+        spec_tab_layout.addWidget(self.toolbar_stft)
+        spec_tab_layout.addWidget(self.canvas_stft)
+        
+        self.analysis_splitter.addWidget(self.panel_spectrogram)
+
+        # --- Panel 2: T2* Analysis (Right) ---
+        self.panel_t2 = QWidget()
+        ana_tab_layout = QVBoxLayout(self.panel_t2)
+        ana_tab_layout.setContentsMargins(0,0,0,0)
+        
+        self.ana_splitter = QSplitter(Qt.Vertical) # Changed to Vertical internal split for T2 plots
+        
+        # Plot 1 (T2* Map / Evolution)
         self.plot_container_1 = QWidget()
         l_1 = QVBoxLayout(self.plot_container_1)
         l_1.setContentsMargins(0,0,0,0)
@@ -1082,7 +1103,7 @@ class MainWindow(QMainWindow):
         l_1.addWidget(self.toolbar_evo)
         l_1.addWidget(self.canvas_evo)
         
-        # Plot 2 (Detail Curve)
+        # Plot 2 (Detail Curve - Hidden by default or secondary)
         self.plot_container_2 = QWidget()
         l_2 = QVBoxLayout(self.plot_container_2)
         l_2.setContentsMargins(0,0,0,0)
@@ -1099,28 +1120,14 @@ class MainWindow(QMainWindow):
         self.plot_container_2.hide()
         
         ana_tab_layout.addWidget(self.ana_splitter)
-        self.tabs_analysis.addTab(self.tab_analysis_results, "T2* Analysis")
+        
+        self.analysis_splitter.addWidget(self.panel_t2)
+        
+        # Set Ratios: Spectrogram takes priority (e.g. 60%), T2 takes 40%
+        self.analysis_splitter.setStretchFactor(0, 3)
+        self.analysis_splitter.setStretchFactor(1, 2)
 
-        # --- Tab 2: Spectrogram ---
-        self.tab_spectrogram = QWidget()
-        spec_tab_layout = QVBoxLayout(self.tab_spectrogram)
-        spec_tab_layout.setContentsMargins(0,0,0,0)
-        
-        self.fig_stft = Figure(figsize=(5, 3))
-        self.canvas_stft = FigureCanvas(self.fig_stft)
-        self.ax_stft = self.fig_stft.add_subplot(111)
-        self.canvas_stft.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.toolbar_stft = NavigationToolbar(self.canvas_stft, self.tab_spectrogram)
-        
-        # Connect Click Event (T2* Analysis from Spectrogram)
-        self.canvas_stft.mpl_connect('button_press_event', self.on_spectrogram_click)
-        
-        spec_tab_layout.addWidget(self.toolbar_stft)
-        spec_tab_layout.addWidget(self.canvas_stft)
-        
-        self.tabs_analysis.addTab(self.tab_spectrogram, "Spectrogram")
-
-        right_splitter.addWidget(self.tabs_analysis)
+        right_splitter.addWidget(self.analysis_splitter)
         
         self.main_splitter.addWidget(right_splitter)
         self.main_splitter.setStretchFactor(0, 0) 
@@ -1817,8 +1824,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Data", "Please process data first.")
             return
             
-        # 2. Switch Tab
-        self.tabs_analysis.setCurrentIndex(1) # Index 1 is Spectrogram
+        # 2. Switch Tab (Removed - now all visible)
+        # self.tabs_analysis.setCurrentIndex(1) 
         
         # 3. Always work with COMPLEX data
         data_in = self.current_processed_time
@@ -2060,8 +2067,8 @@ class MainWindow(QMainWindow):
             r2 = 0
             fit_curve = np.zeros_like(times)
 
-        # 4. Switch to T2* Analysis Tab to show results
-        self.tabs_analysis.setCurrentIndex(0) # Index 0 is T2* Analysis
+        # 4. Switch to T2* Analysis Tab (Removed - now all visible)
+        # self.tabs_analysis.setCurrentIndex(0) 
         
         # 5. Plot on ax_evo
         self.ax_evo.clear()
