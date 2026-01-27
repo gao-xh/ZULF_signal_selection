@@ -1543,8 +1543,11 @@ class MainWindow(QMainWindow):
             self.canvas_time.draw()
             return
             
-        # Plot Real part of time domain usually
-        t = np.arange(len(self.current_processed_time)) / self.loader_sampling_rate
+        # Time Axis with Start Offset (Truncation)
+        trunc_start_pts = self.spin_trunc_start.value()
+        t_offset = trunc_start_pts / self.loader_sampling_rate
+        
+        t = (np.arange(len(self.current_processed_time)) / self.loader_sampling_rate) + t_offset
         y = np.real(self.current_processed_time)
         
         self.ax_time.plot(t, y, 'b-', linewidth=0.5)
@@ -1837,6 +1840,11 @@ class MainWindow(QMainWindow):
                 noverlap=noverlap, 
                 return_onesided=False 
             )
+            
+            # Apply Time Offset (Truncation)
+            trunc_start_pts = self.spin_trunc_start.value()
+            t_offset = trunc_start_pts / fs
+            t = t + t_offset
             
             f = scipy.fft.fftshift(f)
             Zxx = scipy.fft.fftshift(Zxx, axes=0)
