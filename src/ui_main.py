@@ -694,6 +694,12 @@ class MainWindow(QMainWindow):
         self.p1_slider = SliderSpinBox("Phase 1 (deg)", *self._unpack(r['phase_1']), is_float=True)
         proc_layout.addWidget(self.p1_slider)
         self.p1_slider.valueChanged.connect(self.request_processing_update)
+
+        # Auto Phase Button
+        self.btn_auto_phase = QPushButton("Auto Phase (Entropy)")
+        self.btn_auto_phase.setToolTip("Automatically correct phase using Minimum Entropy algorithm")
+        self.btn_auto_phase.clicked.connect(self.run_auto_phase)
+        proc_layout.addWidget(self.btn_auto_phase)
         
         # Baseline Correction Controls (ASLS)
         self.baseline_group = QGroupBox("Baseline (ASLS)")
@@ -716,12 +722,6 @@ class MainWindow(QMainWindow):
         
         self.baseline_group.setLayout(bl_layout)
         proc_layout.addWidget(self.baseline_group)
-
-        # Auto Phase Button
-        self.btn_auto_phase = QPushButton("Auto Phase (Entropy)")
-        self.btn_auto_phase.setToolTip("Automatically correct phase using Minimum Entropy algorithm")
-        self.btn_auto_phase.clicked.connect(self.run_auto_phase)
-        proc_layout.addWidget(self.btn_auto_phase)
         
         # View Mode / Data Mode (Global)
         self.view_mode_group = QGroupBox("Processing Target (Mode)")
@@ -1492,10 +1492,22 @@ class MainWindow(QMainWindow):
         if self.raw_avg_data is None:
             return
             
-        # Cancel any previous running worker to avoid race conditions or crashes
-        if hasattr(self, 'proc_worker') and self.proc_worker is not None and self.proc_worker.isRunning():
-            self.proc_worker.quit()
-            self.proc_worker.wait(500) # Quick wait, don't block too long
+        # Robust Thread Management to prevent "QThread: Destroyed while thread is still running"
+        if hasattr(self, 'proc_worker') and self.proc_worker is not None:
+            if self.proc_worker.isRunning():
+                self.proc_worker.quit()
+                # Don't wait() here as it blocks UI. Move to cleanup list instead of declaring variable dead.
+                if not hasattr(self, '_zombie_workers'):
+                    self._zombie_workers = []
+                self._zombie_workers.append(self.proc_worker)
+                # Cleanup truly dead workers
+                self._zombie_workers = [w for w in self._zombie_workers if w.isRunning()]
+            
+            # Disconnect signals so old workers don't update UI
+            try: self.proc_worker.finished.disconnect(self.on_processing_finished) 
+            except TypeError: pass # Not connected
+            try: self.proc_worker.error.disconnect(self.on_error)
+            except TypeError: pass
 
         params = self._get_process_params()
         self.statusBar().showMessage("Processing...")
