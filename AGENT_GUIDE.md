@@ -130,3 +130,25 @@
     *   **Source of Truth**: The `noise_threshold` is passed down from the UI (User's Peak Detection Threshold) to the backend.
 *   **Result**: Forces the optimizer to interpret flat signals as "Long T2" rather than "High Offset", ensuring physical validity.
 
+#### C. Asymmetric Least Squares (ASLS) Baseline Correction
+*   **Objective**: Remove non-uniform background drift from the spectrum while preserving peak intensities.
+*   **Method**: Whitaker-Hayes algorithm (Asymmetric Least Squares).
+    *   **Logic**: Iteratively fits a smooth baseline ($z$) to the signal ($y$) by minimizing cost function: $S = \sum w_i (y_i - z_i)^2 + \lambda \sum (\Delta^2 z_i)^2$
+    *   **Weights ($w$)**: Updated iteratively. If signal > baseline (peak region), $w=p$ (very small); if signal < baseline, $w=1-p$ (large). effect: Baseline "hugs" the bottom of the noise floor.
+    *   **Params**:
+        *   $\lambda$ (Lambda): Smoothness (1e3 - 1e7). Larger = stiffer baseline.
+        *   $p$ (Asymmetry): Weight for positive deviations (0.0001 - 0.01). Smaller = baseline stays lower.
+
+### 8. UI Engineering Guidelines
+
+#### A. Thread Safety in Heavy Processing
+*   **Problem**: Rapid UI events (e.g., sliding Phase Slider) trigger frequent heavy computations (FFT/Matrix Solvers). Old `QThread` instances may be garbage collected while C++ backend is still executing, causing Segmentation Faults.
+*   **Pattern**: **"Zombie Worker" Lifecycle**.
+    *   **Do Not**: Simply call `worker.quit()` or overwrite `self.worker`.
+    *   **Do**:
+        1.  Disconnect signals from the old worker (to prevent UI updates from obsolete results).
+        2.  Call `quit()`.
+        3.  Move the old worker instance into a `self._zombie_workers` list to keep the Python reference alive until execution finishes naturally.
+        4.  Periodically clean up the list.
+
+

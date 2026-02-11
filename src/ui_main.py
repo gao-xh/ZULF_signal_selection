@@ -678,20 +678,37 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.apod_rate)
         self.apod_rate.valueChanged.connect(self.request_processing_update)
 
-        self.trunc_slider = SliderSpinBox("Trunc Start (pts)", *self._unpack(r['trunc_start']))
-        proc_layout.addWidget(self.trunc_slider)
+        # Truncation Group
+        trunc_group = QGroupBox("Truncation")
+        trunc_layout = QVBoxLayout()
+        trunc_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.trunc_slider = SliderSpinBox("Start (pts)", *self._unpack(r['trunc_start']))
+        trunc_layout.addWidget(self.trunc_slider)
         self.trunc_slider.valueChanged.connect(self.request_processing_update)
         
-        self.trunc_end_slider = SliderSpinBox("Trunc End (pts)", *self._unpack(r['trunc_end']))
-        proc_layout.addWidget(self.trunc_end_slider)
+        self.chk_zf_front = QCheckBox("Zero-Fill Front")
+        self.chk_zf_front.setToolTip("If checked, start points are muted (replaced by mean) instead of removed.\nThis preserves the total time/length.")
+        self.chk_zf_front.setChecked(False) 
+        self.chk_zf_front.stateChanged.connect(self.request_processing_update)
+        trunc_layout.addWidget(self.chk_zf_front)
+
+        self.trunc_end_slider = SliderSpinBox("End (pts)", *self._unpack(r['trunc_end']))
+        trunc_layout.addWidget(self.trunc_end_slider)
         self.trunc_end_slider.valueChanged.connect(self.request_processing_update)
+        
+        trunc_group.setLayout(trunc_layout)
+        proc_layout.addWidget(trunc_group)
 
         # Phase
         self.p0_slider = SliderSpinBox("Phase 0 (deg)", *self._unpack(r['phase_0']), is_float=True)
         proc_layout.addWidget(self.p0_slider)
         self.p0_slider.valueChanged.connect(self.request_processing_update)
 
-        self.p1_slider = SliderSpinBox("Phase 1 (deg)", *self._unpack(r['phase_1']), is_float=True)
+        # Repurposed P1 as Time Shift (Blake's Method)
+        # Using a wider range for shift, e.g., +/- 500 points
+        self.p1_slider = SliderSpinBox("Time Shift (pts)", -200, 200, 0)
+        self.p1_slider.setToolTip("Time Domain Shift (1st Order Correction).\nPositive = Delay (Right Shift)\nNegative = Advance (Left Shift)")
         proc_layout.addWidget(self.p1_slider)
         self.p1_slider.valueChanged.connect(self.request_processing_update)
 
@@ -722,6 +739,9 @@ class MainWindow(QMainWindow):
         
         self.baseline_group.setLayout(bl_layout)
         proc_layout.addWidget(self.baseline_group)
+
+        # Auto Phase Button
+        # Moved above Baseline group in previous step
         
         # View Mode / Data Mode (Global)
         self.view_mode_group = QGroupBox("Processing Target (Mode)")
@@ -1342,7 +1362,9 @@ class MainWindow(QMainWindow):
             'p1': float(self.p1_slider.value()),
             'trunc_start': int(self.trunc_slider.value()),
             'trunc_end': int(self.trunc_end_slider.value()),
+            'zero_fill_front': self.chk_zf_front.isChecked(),
             'phase_mode': 'manual', 
+            'p1_is_shift': True, # Flag for backend to know we are using shift
             'enable_svd': self.chk_svd.isChecked(),
             # Baseline
             'baseline_enable': self.baseline_group.isChecked(),

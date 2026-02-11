@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-02-11] - Baseline & Visualization Update
+### Added
+- **Algorithm**: Implemented Asymmetric Least Squares (ASLS) Baseline Correction logic.
+- **UI**: Added Baseline control group (Lambda, P, Iterations) in Processing tab.
+- **Visualization**: Added interactive T2* analysis visualization (Cyan dashed line) on spectrogram and side profile.
+- **Reference**: Added external reference code `SI_zfnmr_processing.ipynb` (Blake's implementation).
+
+### Fixed
+- **Stability**: Resolved `QThread` destruction crash during rapid phase slider adjustment using "zombie worker" pattern.
+- **UI Layout**: Optimized layout by moving "Auto Phase" button below phase sliders.
+
 ## [Current] - 2026-XX-XX
 ### Added
 - **Iterative Peak Tracking**: Implemented dynamic peak search ($Center_t = Peak_{t-1}$) in Global Analysis.

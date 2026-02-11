@@ -114,31 +114,80 @@ class Processor:
                  smooth = scipy.signal.savgol_filter(data.real, window, order, mode='mirror')
                  data = data - smooth
 
-        # 2. Truncation (Moved before SVD to improve performance)
+        # 2. Time Domain Phase Correction (P0 & P1/Shift) - Blake's Method
+        # In this mode, P0 is a constant phase multiply, and P1 is a time-shift.
+        # This replaces the frequency domain correction.
+        
+        # P0: Constant Phase (Degrees -> Radians)
+        p0_deg = params.get('p0', 0)
+        if abs(p0_deg) > 1e-6:
+            data = data * np.exp(1j * np.deg2rad(p0_deg))
+        
+        # P1: Time Shift (Points)
+        # Note: UI 'p1' (Phase 1 deg) is repurposed here as 'Time Shift (points)'
+        # Positive = Delay (prepend), Negative = Advance (cut end)
+        shift_pts = int(params.get('p1', 0))
+        if shift_pts != 0:
+            avg_val = np.mean(data) # Blake uses mean for padding
+            if shift_pts > 0:
+                # Prepend 'shift_pts' copies of mean, push signal to right
+                prepend = np.ones(shift_pts, dtype=data.dtype) * avg_val
+                # To maintain length: Prepend and cut end? 
+                # Blake's code: "prepend... np.concatenate" then "Truncation (from beginning)" later?
+                # Actually Blake's code: 
+                # if shift > 0: prepend_mean(..., shift, ...) -> Data grows.
+                # But typically we want to keep array size consistent or let it grow if allowed.
+                # Standard practice: Keep length or grow. Here we grow, FFT handles it.
+                data = np.concatenate((prepend, data))
+            elif shift_pts < 0:
+                # Negative shift: Cut the end?
+                # Blake: "savgol_td = savgol_td[-shift:]" -> This slices FROM THE END?
+                # No, [-neg:] means grabbing from index.
+                # Example: shift = -14. savgol_td[-(-14):] -> savgol_td[14:]
+                # This cuts the START. 
+                # Wait, checking Blake's: "savgol_td = savgol_td[-int(float(start_point_shift)):]"
+                # If shift = -14, this is savgol_td[14:]. This removes the FIRST 14 points (Shift Left / Advance).
+                slice_idx = -shift_pts
+                if slice_idx < len(data):
+                    data = data[slice_idx:]
+                else:
+                    data = np.array([])
+
+        # 3. Truncation & Trace Operations
+        # Front Truncation (Start)
         trunc_start = int(params.get('trunc_start', 0))
-        trunc_end = int(params.get('trunc_end', 0))
         
         if trunc_start > 0:
-            # Check bounds
-            if trunc_start < len(data):
-                data = data[trunc_start:]
+            if params.get('zero_fill_front', False):
+                # Zero-Fill Front Mode: MUTE the first N points, do not remove
+                if trunc_start < len(data):
+                    # Replace with mean (like Blake's "savgol_mean_immu") or 0
+                    # Blake calculates mean AFTER Savgol but BEFORE P0/P1 in his original flow.
+                    # Here we are after P0. Using current mean or 0 is safer.
+                    fill_val = 0 # np.mean(data)
+                    data[:trunc_start] = fill_val
             else:
-                data = np.array([]) # All cut
-                
+                # Standard Truncate Mode: CUT the first N points
+                if trunc_start < len(data):
+                    data = data[trunc_start:]
+                else:
+                    data = np.array([])
+
+        # End Truncation
+        trunc_end = int(params.get('trunc_end', 0))
         if trunc_end > 0:
-            # Check bounds
+            # Note: Blake cuts from end differently based on his specific flow, 
+            # likely removing acquisition decay or bad end points.
             if trunc_end < len(data):
                 data = data[:-trunc_end]
             else:
-                # If trunc_end is very large, it might clear everything
-                # Logic: data[:-large] -> empty
-                data = np.array([])
+                 data = np.array([])
 
         if len(data) == 0:
             # Early return if empty
             return np.array([0]), np.array([0])
         
-        # 3. SVD Denoising (Optional)
+        # 4. SVD Denoising (Optional)
         # SVD involves constructing a Hankel matrix which is N/2 x N/2. 
         # For N=60000, this is 30000x30000, which requires ~7GB RAM (complex128 is 16 bytes/val -> 14GB!).
         # We must limit the size or skip SVD to prevent crashes on standard machines.
@@ -178,13 +227,15 @@ class Processor:
         spectrum = scipy.fft.fft(data)
         freqs = scipy.fft.fftfreq(len(data), d=1.0/sampling_rate)
         
-        # 7. Phase Correction
-        # Check if we should auto phase or apply fixed
-        # But this function 'process_fid' is intended for batch processing usually.
-        # We assume params['p0'] and params['p1'] are set correctly.
+        # 7. Phase Correction (Frequency Domain - DISABLED)
+        # Using Blake's Method (Time Domain) strictly.
+        # However, if 'apply_phase_correction' is called, it might double apply.
+        # Let's ensure P0/P1 are zeroed out if we passed them?
+        # No, we already applied them in Time Domain above.
+        # We assume parameters 'p0' and 'p1' were consumed there.
+        # To be safe, we DO NOT call apply_phase_correction here again.
         
-        # Use local implementation of apply_phase_correction
-        spectrum = apply_phase_correction(spectrum, params.get('p0', 0), params.get('p1', 0))
+        # spectrum = apply_phase_correction(spectrum, params.get('p0', 0), params.get('p1', 0))
         
         # 8. Baseline Correction (ASLS)
         if params.get('baseline_enable', False):
