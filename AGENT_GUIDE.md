@@ -56,7 +56,15 @@
     *   **Phase Sync**: All subsets must use the **same phase correction parameters** derived from the full dataset ($N_{max}$). Do not auto-phase each subset individually to avoid jitter.
     *   **Pipeline**: Load Raw $\to$ Pre-processing (Savgol/Filter) $\to$ Average $\to$ FFT $\to$ Phase Correction (Fixed).
 
-#### B. Validation Workflow
+#### B. Quality Control (Scan Selection)
+*   **Problem**: Experimental data often contains "bad scans" (e.g., EMI spikes, magnet quenches) that do not follow Gaussian noise distribution. These outliers violate the $\sqrt{N}$ assumption and degrade signal detection.
+*   **Solution (Reference: `references/ScanSelector`)**:
+    *   **Residual Analysis**: Compare each individual scan against a "Reference Scan" (e.g., median of all scans).
+    *   **Metric**: Calculate **Squared Residual Sum** (or Euclidean Distance) for each scan.
+    *   **Filtering**: Reject scans with residuals exceeding a dynamic threshold (e.g., $> 2\sigma$ from mean residual).
+    *   **Integration**: This QC step should happen **inside `ProgressiveLoader`**, before any cumulative averaging is performed.
+
+#### C. Validation Workflow
 1.  **Dynamic Checkpoints**: Generate checkpoints $(N_i)$ based on total scan count $M$ to ensure uniform distribution on the $\sqrt{N}$ scale.
     *   Formula: $N_i \approx (\frac{i}{K}\sqrt{M})^2$
 2.  **Sampling Modes**:

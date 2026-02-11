@@ -695,6 +695,28 @@ class MainWindow(QMainWindow):
         proc_layout.addWidget(self.p1_slider)
         self.p1_slider.valueChanged.connect(self.request_processing_update)
         
+        # Baseline Correction Controls (ASLS)
+        self.baseline_group = QGroupBox("Baseline (ASLS)")
+        self.baseline_group.setCheckable(True)
+        self.baseline_group.setChecked(False) # Default off
+        self.baseline_group.toggled.connect(self.request_processing_update)
+        bl_layout = QVBoxLayout()
+        
+        self.bl_lambda = SliderSpinBox("Lambda (Smooth)", *self._unpack(r['baseline_lambda']), is_float=True)
+        self.bl_lambda.valueChanged.connect(self.request_processing_update)
+        bl_layout.addWidget(self.bl_lambda)
+        
+        self.bl_p = SliderSpinBox("P (Asym)", *self._unpack(r['baseline_p']), is_float=True, decimals=4)
+        self.bl_p.valueChanged.connect(self.request_processing_update)
+        bl_layout.addWidget(self.bl_p)
+        
+        self.bl_niter = SliderSpinBox("Iterations", *self._unpack(r['baseline_niter']))
+        self.bl_niter.valueChanged.connect(self.request_processing_update)
+        bl_layout.addWidget(self.bl_niter)
+        
+        self.baseline_group.setLayout(bl_layout)
+        proc_layout.addWidget(self.baseline_group)
+
         # Auto Phase Button
         self.btn_auto_phase = QPushButton("Auto Phase (Entropy)")
         self.btn_auto_phase.setToolTip("Automatically correct phase using Minimum Entropy algorithm")
@@ -759,6 +781,9 @@ class MainWindow(QMainWindow):
         self.combo_spec_window.addItem("High Time Res (256)", 256)
         self.combo_spec_window.addItem("Balanced (1024)", 1024)
         self.combo_spec_window.addItem("High Freq Res (4096)", 4096)
+        self.combo_spec_window.addItem("Very High Freq Res (8192)", 8192)
+        self.combo_spec_window.addItem("Ultra High Freq Res (16384)", 16384)
+        self.combo_spec_window.addItem("Extreme Freq Res (32768)", 32768)
         self.combo_spec_window.setCurrentIndex(1) # Default Balanced
         row_spec.addWidget(self.combo_spec_window)
         
@@ -1170,6 +1195,12 @@ class MainWindow(QMainWindow):
                 'trunc_end': self.trunc_end_slider.value(),
                 'enable_svd': self.chk_svd.isChecked(),
                 
+                # Baseline
+                'baseline_enable': self.baseline_group.isChecked(),
+                'baseline_lambda': self.bl_lambda.value(),
+                'baseline_p': self.bl_p.value(),
+                'baseline_niter': self.bl_niter.value(),
+                
                 # Peak picking
                 'peak_height_abs': self.peak_thr.value(),
                 'sys_freq_min': self.freq_min_search.value(),
@@ -1244,6 +1275,12 @@ class MainWindow(QMainWindow):
             
             if 'enable_svd' in params:
                 self.chk_svd.setChecked(params['enable_svd'])
+            
+            if 'baseline_enable' in params:
+                self.baseline_group.setChecked(params['baseline_enable'])
+            set_val(self.bl_lambda, 'baseline_lambda', float)
+            set_val(self.bl_p, 'baseline_p', float)
+            set_val(self.bl_niter, 'baseline_niter', int)
                 
             set_val(self.peak_thr, 'peak_height_abs', float)
             set_val(self.freq_min_search, 'sys_freq_min', float)
@@ -1307,6 +1344,12 @@ class MainWindow(QMainWindow):
             'trunc_end': int(self.trunc_end_slider.value()),
             'phase_mode': 'manual', 
             'enable_svd': self.chk_svd.isChecked(),
+            # Baseline
+            'baseline_enable': self.baseline_group.isChecked(),
+            'baseline_lambda': float(self.bl_lambda.value()),
+            'baseline_p': float(self.bl_p.value()),
+            'baseline_niter': int(self.bl_niter.value()),
+            # Detection
             'peak_height_abs': float(self.peak_thr.value()),
             'peak_window': int(self.peak_win.value()),
             'search_freq_min': float(self.freq_min_search.value()),
@@ -1448,6 +1491,11 @@ class MainWindow(QMainWindow):
     def run_processing(self):
         if self.raw_avg_data is None:
             return
+            
+        # Cancel any previous running worker to avoid race conditions or crashes
+        if hasattr(self, 'proc_worker') and self.proc_worker is not None and self.proc_worker.isRunning():
+            self.proc_worker.quit()
+            self.proc_worker.wait(500) # Quick wait, don't block too long
 
         params = self._get_process_params()
         self.statusBar().showMessage("Processing...")
@@ -1700,6 +1748,11 @@ class MainWindow(QMainWindow):
         if len(pos_freqs) < 2 or np.ptp(pos_freqs) == 0:
             self.canvas_spec.draw()
             return
+            
+        # Also guard against all-NaN data which prevents limit updates (causing singular bbox)
+        if not np.any(np.isfinite(pos_data)):
+            self.canvas_spec.draw()
+            return
 
         self.ax_spec.plot(pos_freqs, pos_data, 'k-', linewidth=0.8, alpha=0.6, label=f'Spectrum ({mode_label})')
         
@@ -1717,11 +1770,11 @@ class MainWindow(QMainWindow):
             # Highlight the VALID search region (or grey out the ignored)
             # Greying out outside is clearer
             # Left side
-            if f_min > 0:
+            if f_min > 1e-6:
                 self.ax_spec.axvspan(0, f_min, color='gray', alpha=0.1)
             # Right side
             current_max_freq = np.max(pos_freqs)
-            if f_max < current_max_freq:
+            if f_max < current_max_freq - 1e-6:
                 self.ax_spec.axvspan(f_max, current_max_freq, color='gray', alpha=0.1, label='Ignored Region')
             
             # Add vertical lines for bounds
@@ -1732,9 +1785,10 @@ class MainWindow(QMainWindow):
             if self.combo_noise_method.currentText() == "Global Region":
                 n_min = self.noise_min.value()
                 n_max = self.noise_max.value()
-                # Red semi-transparent area for noise
-                self.ax_spec.axvspan(n_min, n_max, color='red', alpha=0.05, label='Noise Calc Region')
-                self.ax_spec.text((n_min+n_max)/2, thr_val*1.1, "Noise", color='red', fontsize=8, ha='center')
+                if n_max > n_min + 1e-6:
+                    # Red semi-transparent area for noise
+                    self.ax_spec.axvspan(n_min, n_max, color='red', alpha=0.05, label='Noise Calc Region')
+                    self.ax_spec.text((n_min+n_max)/2, thr_val*1.1, "Noise", color='red', fontsize=8, ha='center')
         except Exception as e:
             print(f"Warning: Could not draw spectrum decorations: {e}")
 
@@ -1908,10 +1962,10 @@ class MainWindow(QMainWindow):
         gs = self.fig_stft.add_gridspec(1, 2, width_ratios=[1, 6], wspace=0.05)
         
         # Axis 1: Side Spectrum (Left)
-        ax_side = self.fig_stft.add_subplot(gs[0])
+        self.ax_side = self.fig_stft.add_subplot(gs[0])
         
         # Axis 2: Spectrogram (Right) - Share Y with Side Spectrum
-        self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=ax_side)
+        self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=self.ax_side)
         
         # Calculate Log Scale
         if self.chk_spec_log.isChecked():
@@ -1937,27 +1991,27 @@ class MainWindow(QMainWindow):
         
         # Plot Side Profile (Left)
         # Plot Frequency on Y, Amplitude on X
-        ax_side.plot(side_profile, f, 'k-', linewidth=0.8)
+        self.ax_side.plot(side_profile, f, 'k-', linewidth=0.8)
         fill_base = np.min(side_profile)
-        ax_side.fill_betweenx(f, fill_base, side_profile, color='gray', alpha=0.3)
+        self.ax_side.fill_betweenx(f, fill_base, side_profile, color='gray', alpha=0.3)
         
         # Styling Side Plot (The Y-axis Labels belong here now)
-        ax_side.grid(True, alpha=0.3)
+        self.ax_side.grid(True, alpha=0.3)
         unit_str = "(dB)" if self.chk_spec_log.isChecked() else ""
-        ax_side.set_xlabel(f"Avg Amp {unit_str}")
+        self.ax_side.set_xlabel(f"Avg Amp {unit_str}")
         
         # Invert logic consideration:
         # Standard: 0 -> Max. User has 0 on left, Max on right. 
         # But for dB, -100 is left, -10 is right. This is correct.
         
-        ax_side.set_xlim(auto=True)
+        self.ax_side.set_xlim(auto=True)
         # Make sure X axis is normal
-        if ax_side.get_xlim()[0] > ax_side.get_xlim()[1]: # if inverted
-             ax_side.invert_xaxis()
+        if self.ax_side.get_xlim()[0] > self.ax_side.get_xlim()[1]: # if inverted
+             self.ax_side.invert_xaxis()
 
         # Labels
         mode_str = " (|Hz|)" if is_folded else " (Hz)"
-        ax_side.set_ylabel(f"Frequency{mode_str}")
+        self.ax_side.set_ylabel(f"Frequency{mode_str}")
         
         # Styling Heatmap (Remove Y Labels as they are on ax_side now)
         plt.setp(self.ax_stft.get_yticklabels(), visible=False)
@@ -1972,7 +2026,7 @@ class MainWindow(QMainWindow):
              if f_min < 0: f_min = 0
              
         # Set Limits on the Shared Axis (ax_side controls Y)
-        ax_side.set_ylim(f_min, f_max)
+        self.ax_side.set_ylim(f_min, f_max)
         
         # Colorbar - attach to Spectrogram axis (Right side)
         self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
@@ -2011,6 +2065,30 @@ class MainWindow(QMainWindow):
         idx = (np.abs(self.stft_f - target_freq)).argmin()
         actual_freq = self.stft_f[idx]
         
+        # --- Visual Feedback on Spectrogram ---
+        # Remove previous selection line if it exists
+        if hasattr(self, 'current_stft_line') and self.current_stft_line:
+            try:
+                self.current_stft_line.remove()
+            except Exception:
+                pass # Already removed or invalid
+        
+        # Draw new line at the selected actual frequency
+        self.current_stft_line = self.ax_stft.axhline(y=actual_freq, color='cyan', linestyle='--', linewidth=1, alpha=0.9, label='Selected')
+        
+        # Also draw on Side Spectrum if available
+        if hasattr(self, 'current_side_line') and self.current_side_line:
+            try:
+                self.current_side_line.remove()
+            except Exception:
+                pass
+        
+        if hasattr(self, 'ax_side'):
+             self.current_side_line = self.ax_side.axhline(y=actual_freq, color='cyan', linestyle='--', linewidth=1, alpha=0.9)
+
+        self.canvas_stft.draw()
+        # --------------------------------------
+
         # 2. Extract Data (Slice across time)
         times = self.stft_t
         amps = self.stft_Sxx[idx, :]

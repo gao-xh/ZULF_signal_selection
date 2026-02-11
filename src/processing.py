@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import scipy.signal
 import scipy.fft
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
 from scipy.signal import find_peaks
 from scipy.stats import linregress
 from scipy.optimize import curve_fit
@@ -59,7 +61,40 @@ class Processor:
             'p0': 0.0,
             'p1': 0.0,
             'phase_mode': 'manual', # 'manual' or 'auto' (only for N_max)
+
+            # Baseline Correction (ASLS)
+            'baseline_enable': False,
+            'baseline_lambda': 1000.0,
+            'baseline_p': 0.01,
+            'baseline_niter': 10,
         }
+        
+    @staticmethod
+    def asls_baseline(y, lam, p, niter=10):
+        """
+        Asymmetric Least Squares baseline correction.
+        y : 1D array (signal)
+        lam : float, smoothing parameter (larger => smoother baseline)
+        p : float between 0 and 1, asymmetry parameter (smaller => baseline stays below peaks)
+        niter : iterations
+        Returns baseline (same length as y)
+        """
+        L = len(y)
+        # Create difference matrix
+        D = sparse.diags([1, -2, 1], [0, 1, 2], shape=(L-2, L))
+        # D.T @ D
+        DTD = D.T @ D
+        
+        w = np.ones(L)
+        z = np.zeros(L)
+        
+        for i in range(int(niter)):
+            W = sparse.diags(w, 0)
+            Z = W + lam * DTD
+            z = spsolve(Z, w * y)
+            w = p * (y > z) + (1 - p) * (y <= z)
+            
+        return z
 
     @staticmethod
     def process_fid(fid_data, params, sampling_rate):
@@ -150,6 +185,25 @@ class Processor:
         
         # Use local implementation of apply_phase_correction
         spectrum = apply_phase_correction(spectrum, params.get('p0', 0), params.get('p1', 0))
+        
+        # 8. Baseline Correction (ASLS)
+        if params.get('baseline_enable', False):
+            # Baseline correction is typically performed on the REAL part of the phased spectrum
+            lam = float(params.get('baseline_lambda', 1000))
+            p_val = float(params.get('baseline_p', 0.01))
+            niter = int(params.get('baseline_niter', 10))
+            
+            real_part = np.real(spectrum)
+            
+            try:
+                # Calculate baseline
+                baseline = Processor.asls_baseline(real_part, lam, p_val, niter)
+                # Subtract baseline from Real part
+                corrected_real = real_part - baseline
+                # Reconstruct complex spectrum (Imaginary part untouched)
+                spectrum = corrected_real + 1j * np.imag(spectrum)
+            except Exception as e:
+                print(f"Baseline Correction Error: {e}")
             
         return freqs, spectrum
 
