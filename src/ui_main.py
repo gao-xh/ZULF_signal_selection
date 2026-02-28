@@ -687,11 +687,24 @@ class MainWindow(QMainWindow):
         trunc_layout.addWidget(self.trunc_slider)
         self.trunc_slider.valueChanged.connect(self.request_processing_update)
         
-        self.chk_zf_front = QCheckBox("Zero-Fill Front")
-        self.chk_zf_front.setToolTip("If checked, start points are muted (replaced by mean) instead of removed.\nThis preserves the total time/length.")
-        self.chk_zf_front.setChecked(False) 
-        self.chk_zf_front.stateChanged.connect(self.request_processing_update)
-        trunc_layout.addWidget(self.chk_zf_front)
+        # Gap Fill Mode Selection
+        row_fill = QHBoxLayout()
+        row_fill.addWidget(QLabel("Fill Mode:"))
+        self.combo_trunc_mode = QComboBox()
+        # Map index to internal values: 0='cut', 1='zero', 2='harmonic'
+        self.combo_trunc_mode.addItems(["Cut (Remove)", "Zero Fill (Mute)", "Harmonic Fill"])
+        self.combo_trunc_mode.setToolTip("How to handle the truncated start region.")
+        self.combo_trunc_mode.currentIndexChanged.connect(self.update_trunc_ui_state)
+        self.combo_trunc_mode.currentIndexChanged.connect(self.request_processing_update)
+        row_fill.addWidget(self.combo_trunc_mode)
+        trunc_layout.addLayout(row_fill)
+        
+        # Harmonic Frequency Input
+        self.spin_fill_freq = SliderSpinBox("Fill Freq (Hz)", *self._unpack(r['trunc_fill_freq']), is_float=True)
+        self.spin_fill_freq.setToolTip("Frequency of the sine wave used to fill the gap.")
+        self.spin_fill_freq.setVisible(False) # Hidden by default (Cut mode)
+        self.spin_fill_freq.valueChanged.connect(self.request_processing_update)
+        trunc_layout.addWidget(self.spin_fill_freq)
 
         self.trunc_end_slider = SliderSpinBox("End (pts)", *self._unpack(r['trunc_end']))
         trunc_layout.addWidget(self.trunc_end_slider)
@@ -795,17 +808,13 @@ class MainWindow(QMainWindow):
         
         # Params Row
         row_spec = QHBoxLayout()
-        row_spec.addWidget(QLabel("Win:"))
-        self.combo_spec_window = QComboBox()
-        # Options: (Label, NFFT)
-        self.combo_spec_window.addItem("High Time Res (256)", 256)
-        self.combo_spec_window.addItem("Balanced (1024)", 1024)
-        self.combo_spec_window.addItem("High Freq Res (4096)", 4096)
-        self.combo_spec_window.addItem("Very High Freq Res (8192)", 8192)
-        self.combo_spec_window.addItem("Ultra High Freq Res (16384)", 16384)
-        self.combo_spec_window.addItem("Extreme Freq Res (32768)", 32768)
-        self.combo_spec_window.setCurrentIndex(1) # Default Balanced
-        row_spec.addWidget(self.combo_spec_window)
+        # row_spec.addWidget(QLabel("Win:"))
+        
+        # Changed from ComboBox to SliderSpinBox for flexible window size
+        # Range: 64 to 32768, Step: 64, Default: 1024
+        self.spec_window_size = SliderSpinBox("STFT Window", 64, 32768, 1024, step=64)
+        self.spec_window_size.setToolTip("Window size (nperseg) for Short-Time FFT.\nSmaller = Better Time Res, Larger = Better Freq Res.")
+        row_spec.addWidget(self.spec_window_size)
         
         self.chk_spec_abs = QCheckBox("Abs(Freq)")
         self.chk_spec_abs.setToolTip("Take absolute value of frequency axis (Mirror negative freqs to positive)")
@@ -1206,13 +1215,17 @@ class MainWindow(QMainWindow):
             # 1. Processing Params (from _get_process_params)
             # We construct this manually to include UI states that might not be in _get_process_params yet
             params = {
+                'version': 'blake_phase_v1', # Version tag for compatibility check
                 'savgol_window': self.savgol_window.value(),
                 'savgol_order': self.savgol_order.value(),
                 'apod_rate': self.apod_rate.value(),
                 'p0': self.p0_slider.value(),
-                'p1': self.p1_slider.value(),
+                'p1': self.p1_slider.value(), # Now Time Shift (pts)
                 'trunc_start': self.trunc_slider.value(),
                 'trunc_end': self.trunc_end_slider.value(),
+                'trunc_fill_mode': self.combo_trunc_mode.currentText(),
+                'trunc_fill_freq': self.spin_fill_freq.value(),
+                'zero_fill_front': (self.combo_trunc_mode.currentIndex() == 1), # Legacy compat
                 'enable_svd': self.chk_svd.isChecked(),
                 
                 # Baseline
@@ -1289,10 +1302,19 @@ class MainWindow(QMainWindow):
             set_val(self.savgol_order, 'savgol_order', int)
             set_val(self.apod_rate, 'apod_rate', float)
             set_val(self.p0_slider, 'p0', float)
-            set_val(self.p1_slider, 'p1', float)
+            set_val(self.p1_slider, 'p1', float) # Time Shift (pts)
             set_val(self.trunc_slider, 'trunc_start', int)
             set_val(self.trunc_end_slider, 'trunc_end', int)
             
+            if 'trunc_fill_mode' in params:
+                 self.combo_trunc_mode.setCurrentText(params['trunc_fill_mode'])
+            elif 'zero_fill_front' in params:
+                 idx = 1 if params['zero_fill_front'] else 0
+                 self.combo_trunc_mode.setCurrentIndex(idx)
+            
+            if 'trunc_fill_freq' in params:
+                 self.spin_fill_freq.spinbox.setValue(float(params['trunc_fill_freq']))
+
             if 'enable_svd' in params:
                 self.chk_svd.setChecked(params['enable_svd'])
             
@@ -1362,7 +1384,8 @@ class MainWindow(QMainWindow):
             'p1': float(self.p1_slider.value()),
             'trunc_start': int(self.trunc_slider.value()),
             'trunc_end': int(self.trunc_end_slider.value()),
-            'zero_fill_front': self.chk_zf_front.isChecked(),
+            'trunc_fill_mode': ['cut', 'zero', 'harmonic'][self.combo_trunc_mode.currentIndex()],
+            'trunc_fill_freq': float(self.spin_fill_freq.value()),
             'phase_mode': 'manual', 
             'p1_is_shift': True, # Flag for backend to know we are using shift
             'enable_svd': self.chk_svd.isChecked(),
@@ -1382,6 +1405,11 @@ class MainWindow(QMainWindow):
             'local_noise_window': int(self.noise_local_win.value()),
             'detect_mode': detect_mode # Pass to worker -> validator
         }
+
+    def update_trunc_ui_state(self):
+        mode = self.combo_trunc_mode.currentIndex()
+        # 0=Cut, 1=Zero, 2=Harmonic
+        self.spin_fill_freq.setVisible(mode == 2)
 
     def request_processing_update(self):
         if self.raw_avg_data is not None:
@@ -1920,9 +1948,9 @@ class MainWindow(QMainWindow):
         
         # 4. Get Parameters
         fs = self.loader_sampling_rate
-        nperseg = self.combo_spec_window.currentData() 
-        if not nperseg: nperseg = 1024
-        nperseg = int(nperseg)
+        # NFFT window size from SpinBox
+        nperseg = int(self.spec_window_size.value())
+        if nperseg < 16: nperseg = 1024 # Safety check
         noverlap = int(nperseg * 0.9) # 90% overlap
         
         try:

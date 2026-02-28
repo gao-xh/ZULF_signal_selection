@@ -74,6 +74,7 @@ UI_PARAM_RANGES = {
     'phase_1': (-50000, 50000, 100, 0.0), # Phase 1 (Linear Phase) usually needs large range for us/ms delays
     'trunc_start': (0, 3000, 1, 0), # Enhanced range matching reference
     'trunc_end': (0, 60000, 10, 0), # Reference range is 0-60000
+    'trunc_fill_freq': (1.0, 2000.0, 1.0, 60.0), # Frequency for harmonic fill
     'peak_height': (0.0, 10000000.0, 100.0, DEFAULT_PEAK_HEIGHT),
     'search_freq_min': (0.0, 2000.0, 1.0, DEFAULT_SEARCH_FREQ_MIN),
     'search_freq_max': (0.0, 2000.0, 1.0, DEFAULT_SEARCH_FREQ_MAX),

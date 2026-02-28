@@ -151,4 +151,17 @@
         3.  Move the old worker instance into a `self._zombie_workers` list to keep the Python reference alive until execution finishes naturally.
         4.  Periodically clean up the list.
 
+### 9. Branch-Specific Implementations
+#### Feature: Blake's Phase & Preprocessing (`feature/Blake_phase`)
+This branch implements a distinct processing pipeline inspired by Blake's methodology (see `references/SI_zfnmr_processing.ipynb`):
+*   **Time-Domain Phase Correction**:
+    *   **P0 (Zero Order)**: Applied in time domain via complex multiplication ($e^{i \cdot \phi}$).
+    *   **P1 (First Order)**: Interpreted as **Time Shift (Points)**, implemented via array slicing (advance) or prepending (delay).
+    *   **Zero-Filling**: Option to replace truncated start points with 0/mean instead of removing them, maintaining absolute time axis ($t=0$).
+*   **Parameter Compatibility**:
+    *   Settings files saved in this branch include `"version": "blake_phase_v1"`.
+    *   `p1` values are **points (int)**, not degrees.
+
+### 10. Future Roadmap (Updated Feb 2026)
+
 

@@ -73,7 +73,26 @@ class SliderSpinBox(QWidget):
         self.slider.blockSignals(True)
         
         self.spinbox.setRange(min_val, max_val)
-        self.slider.setRange(int(min_val * self.scale_factor), int(max_val * self.scale_factor))
+        
+        # Safe cast for QSlider (32-bit signed int limit)
+        # 2147483647 is INT_MAX
+        slider_min = int(min_val * self.scale_factor)
+        slider_max = int(max_val * self.scale_factor)
+        
+        MAX_INT = 2147483647
+        MIN_INT = -2147483648
+        
+        # Clamp to avoid overflow crash
+        if slider_max > MAX_INT:
+            slider_max = MAX_INT
+        if slider_min < MIN_INT:
+            slider_min = MIN_INT
+            
+        # Ensure min <= max after clamping
+        if slider_min > slider_max:
+            slider_min = slider_max
+            
+        self.slider.setRange(slider_min, slider_max)
         
         self.spinbox.blockSignals(False)
         self.slider.blockSignals(False)

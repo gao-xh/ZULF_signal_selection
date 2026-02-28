@@ -11,13 +11,24 @@
 - **Stability**: Resolved `QThread` destruction crash during rapid phase slider adjustment using "zombie worker" pattern.
 - **UI Layout**: Optimized layout by moving "Auto Phase" button below phase sliders.
 
-## [Current] - 2026-XX-XX
+## [feature/Blake_phase] - 2026-02-11
 ### Added
-- **Iterative Peak Tracking**: Implemented dynamic peak search ($Center_t = Peak_{t-1}$) in Global Analysis.
-- **Analysis UI**: Added "Enable Iterative Tracking" and "Tracking Window (Hz)" inputs.
-- **UI Refactor**: Split interface into Processing, Detection, and Analysis tabs.
-- **Persistence**: Updated settings to save/load tracking parameters.
-- **Advanced Analysis**: Added "Fit Peak Envelope" (accuarte T2*) and "Fit J-Coupling" (Cosine model) tools for analyzing beating signals.
+- **Time-Domain Processing**: Implemented Blake's processing pipeline where Phase Correction is performed in the time domain.
+  - **P0**: Constant phase multiplication ($e^{i\phi}$).
+  - **P1**: Interpreted as **Time Shift (Points)** instead of frequency-dependent phase.
+- **Zero-Filling**: Added "Zero-Fill Front" option to mute initial points instead of truncating them, preserving the time axis.
+- **Parameters**: Updated Save/Load logic to include `zero_fill_front` and version tag `blake_phase_v1`.
+
+## [Current] - 2026-02-27
+### Added
+- **Harmonic Fill**: Replaced simple "Zero-Fill Front" with a comprehensive "Gap Fill Mode" (Cut, Zero, Harmonic).
+  - Harmonic mode fills the truncated start gap with a sine wave of user-defined frequency (e.g., 60Hz) to maintain continuity and reduce spectral leakage.
+  - Implemented smooth phase locking and amplitude matching at the junction point.
+- **Adjustable STFT Window**: Replaced preset Spectrogram window sizes with a flexible slider (64-32768) for fine-tuning Time vs Frequency resolution.
+
+### Changed
+- **UI**: Added "Fill Mode" combo box and "Fill Freq" slider to Truncation group.
+- **Config**: Added `trunc_fill_freq` to `src/config.py`.
 
 
 ## [Unreleased] - 2026-01-16
