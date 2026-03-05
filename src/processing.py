@@ -197,21 +197,30 @@ class Processor:
         data = fid_data.astype(np.complex128) if np.iscomplexobj(fid_data) else fid_data.astype(np.float64)
         
         # --- BRANCH 1: STFT Data (Minimal Processing) ---
-        # No Savgol (Baseline Correction), No SVD, No Apodization?
-        # User request: "Baseline correction ... affects my short time FFT"
-        # So we definitely skip Savgol.
+        # User Feedback: "Savgol window (baseline correction) IS NEEDED for STFT too."
+        # The user's concern was about "some operations affecting STFT," but upon clarification,
+        # they WANT Savgol but maybe NOT the later Baseline (ASLS) or SVD?
+        # Let's apply Savgol to STFT branch as well.
+        
         data_stft = data.copy()
-        data_stft = Processor._apply_time_controls(data_stft, params, sampling_rate)
-
-        # --- BRANCH 2: Main Data (Full Processing) ---
-        # 1. Savgol Baseline Correction (Time Domain)
+        
+        # 1. Savgol Baseline Correction (Time Domain) - COMMON
         if params.get('conv_points', 0) > 0:
             window = int(params['conv_points'])
             order = int(params['poly_order'])
             if window % 2 == 0: window += 1 # Must be odd
-            if window > 3 and window < len(data):
-                 smooth = scipy.signal.savgol_filter(data.real, window, order, mode='mirror')
+            if window > 3 and window < len(data_stft):
+                 smooth = scipy.signal.savgol_filter(data_stft.real, window, order, mode='mirror')
+                 # Apply to both branches
                  data = data - smooth
+                 data_stft = data_stft - smooth
+
+        data_stft = Processor._apply_time_controls(data_stft, params, sampling_rate)
+
+        # --- BRANCH 2: Main Data (Full Processing) ---
+        # (Savgol already applied above)
+
+        # 2. Time Domain Phase Correction & Truncation
 
         # 2. Time Domain Phase Correction & Truncation
         data = Processor._apply_time_controls(data, params, sampling_rate)
