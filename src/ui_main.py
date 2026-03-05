@@ -512,7 +512,7 @@ class BatchRelaxationWorker(QThread):
             self.error.emit(str(e))
 
 class ProcessWorker(QThread):
-    finished = Signal(object, object, object) # freqs, spec, time_data
+    finished = Signal(object, object, object, object) # freqs, spec, time_data, stft_data
     error = Signal(str)
     
     def __init__(self, raw_data, params, sampling_rate):
@@ -524,24 +524,26 @@ class ProcessWorker(QThread):
     def run(self):
         try:
             processor = Processor()
-            # We modify process_fid to return time domain data too if needed, 
-            # or we just rely on the fact that process_fid does the steps.
-            # But wait, existing process_fid returns (freqs, spec). 
-            # We might want the processed time domain signal for plotting.
-            
-            # Let's peek at processing.py again to see if we can get time data easily.
-            # For now we'll just run it as is.
-            freqs, spec = processor.process_fid(
+            # process_fid now returns: freqs, spec, processed_time, stft_time
+            freqs, spec, processed_time, stft_time = processor.process_fid(
                 self.raw_data, 
                 self.params,
                 self.sampling_rate
             )
-            # To get time data corresponding to this spectrum (processed), 
-            # we rely on IFFT or we change the processor to return it. 
-            # For visualization, IFFT of the spectrum is close enough to "processed result".
-            processed_time = np.fft.ifft(spec)
             
-            self.finished.emit(freqs, spec, processed_time)
+            # Note: processed_time returned by process_fid is the complex time domain signal 
+            # AFTER Savgol/Apod etc but BEFORE FFT/ASLS.
+            # However, if ASLS corrected the spectrum, the 'true' processed time signal 
+            # corresponds to IFFT(spectrum).
+            # The 'processed_time' from process_fid is what went INTO the FFT.
+            # If we want to show the effect of ASLS in time domain (unlikely needed but consistent),
+            # we should use IFFT(spec).
+            # But process_fid returns 'data' which is PRE-FFT.
+            # Let's trust IFFT(spec) for the main visual to be consistent with spectrum.
+            
+            final_time_domain = np.fft.ifft(spec)
+            
+            self.finished.emit(freqs, spec, final_time_domain, stft_time)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -562,6 +564,7 @@ class MainWindow(QMainWindow):
         self.current_spec = None
         self.current_evo_data = None
         self.current_processed_time = None
+        self.current_stft_data = None
         
         self.batch_results_summary = None
         self.batch_results_details = None
@@ -826,6 +829,13 @@ class MainWindow(QMainWindow):
         row_spec.addWidget(self.chk_spec_log)
         
         spec_layout_box.addLayout(row_spec)
+        
+        # New Button for Global T2 Map from STFT
+        self.btn_stft_t2_map = QPushButton("Generate STFT T2 Map")
+        self.btn_stft_t2_map.setToolTip("Fit decay curves for all frequency bins in the visible spectrogram range.")
+        self.btn_stft_t2_map.clicked.connect(self.run_stft_t2_map)
+        spec_layout_box.addWidget(self.btn_stft_t2_map)
+        
         spec_group.setLayout(spec_layout_box)
         proc_tab_layout.addWidget(spec_group)
         # ----------------------------
@@ -1596,7 +1606,7 @@ class MainWindow(QMainWindow):
             # Ideally should be a Worker, but for simplicity let's try direct first.
             
             processor = Processor()
-            _, raw_spec = processor.process_fid(self.raw_avg_data, params, self.loader_sampling_rate)
+            _, raw_spec, _, _ = processor.process_fid(self.raw_avg_data, params, self.loader_sampling_rate)
             
             # 3. Calculate optimal phase
             best_p0, best_p1 = processor.auto_phase_spectrum(raw_spec)
@@ -1624,10 +1634,11 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
-    def on_processing_finished(self, freqs, spec, time_data):
+    def on_processing_finished(self, freqs, spec, time_data, stft_data):
         self.current_freqs = freqs
         self.current_spec = spec
         self.current_processed_time = time_data
+        self.current_stft_data = stft_data
         
         # update dynamic ranges
         try:
@@ -1936,15 +1947,20 @@ class MainWindow(QMainWindow):
         import matplotlib.pyplot as plt
         
         # 1. Check Data
-        if self.current_processed_time is None:
-            QMessageBox.warning(self, "No Data", "Please process data first.")
-            return
+        data_in = None
+        if hasattr(self, 'current_stft_data') and self.current_stft_data is not None:
+             data_in = self.current_stft_data
+        elif self.current_processed_time is not None:
+             data_in = self.current_processed_time
+        else:
+             QMessageBox.warning(self, "No Data", "Please process data first.")
+             return
             
         # 2. Switch Tab (Removed - now all visible)
         # self.tabs_analysis.setCurrentIndex(1) 
         
         # 3. Always work with COMPLEX data
-        data_in = self.current_processed_time
+        # data_in is already set
         
         # 4. Get Parameters
         fs = self.loader_sampling_rate
@@ -2019,15 +2035,25 @@ class MainWindow(QMainWindow):
         # 6. Plot Layout (GridSpec)
         self.fig_stft.clear()
         
-        # Define Grid: [Side Spectrum (15%), Spectrogram (85%)] swapped positions
+        # Define Grid: [Side Spectrum (10%), Spectrogram (60%), T2 Map (30%)]
         # Increased wspace slightly for labels
-        gs = self.fig_stft.add_gridspec(1, 2, width_ratios=[1, 6], wspace=0.05)
+        # Note: If T2 Map is not active yet, we can keep the old layout 
+        # or just allocate the space and leave it empty.
+        # Let's allocate it consistently so the spectrogram doesn't jump.
+        gs = self.fig_stft.add_gridspec(1, 3, width_ratios=[1, 5, 2], wspace=0.1)
         
         # Axis 1: Side Spectrum (Left)
         self.ax_side = self.fig_stft.add_subplot(gs[0])
         
-        # Axis 2: Spectrogram (Right) - Share Y with Side Spectrum
+        # Axis 2: Spectrogram (Middle) - Share Y with Side Spectrum
         self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=self.ax_side)
+        
+        # Axis 3: T2 Map (Right) - Share Y with Side Spectrum
+        self.ax_t2_stft = self.fig_stft.add_subplot(gs[2], sharey=self.ax_side)
+        self.ax_t2_stft.set_xlabel("T2* Decay (s)")
+        self.ax_t2_stft.grid(True, linestyle=':', alpha=0.5)
+        # Hide Y Tick Labels for T2 Map (shared)
+        plt.setp(self.ax_t2_stft.get_yticklabels(), visible=False)
         
         # Calculate Log Scale
         if self.chk_spec_log.isChecked():
@@ -2090,10 +2116,103 @@ class MainWindow(QMainWindow):
         # Set Limits on the Shared Axis (ax_side controls Y)
         self.ax_side.set_ylim(f_min, f_max)
         
-        # Colorbar - attach to Spectrogram axis (Right side)
+        # Colorbar - attach to Spectrogram axis (Middle)
         self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
         
+        # If we have a previously calculated T2 map, restore it?
+        # Or just clear it.
+        # Ideally store stft_t2_results.
+        if hasattr(self, 'current_stft_t2_map') and self.current_stft_t2_map is not None:
+             t2_freqs, t2_vals = self.current_stft_t2_map
+             self.ax_t2_stft.plot(t2_vals, t2_freqs, 'g.', markersize=2, alpha=0.6)
+             # Connect line
+             self.ax_t2_stft.plot(t2_vals, t2_freqs, 'g-', linewidth=0.5, alpha=0.3)
+             # Highlight outliers?
+             # Auto-scale X for T2
+             valid_t2 = t2_vals[t2_vals > 0]
+             if len(valid_t2) > 0:
+                 self.ax_t2_stft.set_xlim(0, np.percentile(valid_t2, 98) * 1.2) # Ignore top 2% outliers
+        
         self.canvas_stft.draw()
+
+    def run_stft_t2_map(self):
+        """
+        Iterate over all frequency bins in the visible STFT range and fit T2.
+        Plot the result on the right panel (ax_t2_stft).
+        """
+        if not hasattr(self, 'stft_Sxx') or self.stft_Sxx is None:
+            QMessageBox.warning(self, "No Spectrogram", "Please generate spectrogram first.")
+            return
+
+        # Get Range
+        f_min = self.freq_min.value()
+        f_max = self.freq_max.value()
+        
+        # Find indices
+        freqs = self.stft_f
+        # Determine if folded or not? self.chk_spec_abs handles display, but freqs are stored.
+        # If folded, freqs are already positive. If full, we might have -5000 to +5000.
+        # f_min/max are usually positive inputs from UI.
+        
+        # Simple mask based on what's visible
+        # If full spectrum, negative freqs might be excluded if UI only shows positive.
+        mask = (np.abs(freqs) >= f_min) & (np.abs(freqs) <= f_max)
+        target_indices = np.where(mask)[0]
+        
+        if len(target_indices) == 0:
+            QMessageBox.warning(self, "Empty Range", "No frequency bins in current view.")
+            return
+
+        if len(target_indices) > 5000:
+             res = QMessageBox.question(self, "Large Calculation", 
+                                        f"Going to fit {len(target_indices)} curves. This might take a while. Continue?",
+                                        QMessageBox.Yes | QMessageBox.No)
+             if res != QMessageBox.Yes: return
+
+        self.statusBar().showMessage(f"Calculating T2* Map for {len(target_indices)} bins...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        
+        t2_results = []
+        freq_results = []
+        
+        try:
+            times = self.stft_t
+            
+            # Simple Loop
+            # Optimization: Pre-calculate log time if needed? 
+            # CurveFitter.fit_envelope does linregress which is fast but overhead adds up.
+            
+            for idx in target_indices:
+                amps = self.stft_Sxx[idx, :]
+                f_val = freqs[idx]
+                
+                # Use simplified fit logic to speed up
+                # Just Envelope Fit
+                res = CurveFitter.fit_envelope(times, amps)
+                
+                if res['status'] == 'success':
+                    t2 = res['t2']
+                    # Sanity Check
+                    if 0 < t2 < 100.0: # Filter crazy values (e.g. > 100s T2 is unlikely)
+                        t2_results.append(t2)
+                        freq_results.append(f_val) # Keep original frequency (even if negative)
+                
+            # Store results: (frequencies, t2_values)
+            # Use separate variable to avoid conflict with rigorous validation results
+            self.current_stft_t2_map = (np.array(freq_results), np.array(t2_results))
+            
+            # Re-draw spectrogram to update the T2 plot (it checks current_stft_t2_map)
+            # Or just plot directly to save time?
+            # Creating full spectrogram is fast enough.
+            self.update_spectrogram()
+            
+            count = len(t2_results)
+            self.statusBar().showMessage(f"T2* Map Complete. Found {count} valid points.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "T2 Map Failed", str(e))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def on_spectrogram_click(self, event):
         """Handle clicks on Spectrogram/Side Profile to analyze T2* at that frequency"""
@@ -2103,7 +2222,7 @@ class MainWindow(QMainWindow):
             return
 
         # Ensure click is within our axes (Main or Side)
-        if event.inaxes not in self.fig_stft.axes:
+        if event.inaxes not in [self.ax_stft, self.ax_side, self.ax_t2_stft]:
             return
             
         # We care about Y coordinate (Frequency) as both axes share Frequency on Y

@@ -19,8 +19,10 @@
 - **Zero-Filling**: Added "Zero-Fill Front" option to mute initial points instead of truncating them, preserving the time axis.
 - **Parameters**: Updated Save/Load logic to include `zero_fill_front` and version tag `blake_phase_v1`.
 
-## [Current] - 2026-02-27
+## [Current] - 2026-03-05
 ### Added
+- **Split Processing Pipeline**: Separated Main Processing (Savgol/Baseline) from STFT Processing. STFT now uses raw phase-corrected signal to avoid baseline artifacts.
+- **T2* Mapping**: Added "Generate STFT T2 Map" feature. Calculates T2* decay for all frequency bins in view and visualizes it alongside the spectrogram.
 - **Harmonic Fill**: Replaced simple "Zero-Fill Front" with a comprehensive "Gap Fill Mode" (Cut, Zero, Harmonic).
   - Harmonic mode fills the truncated start gap with a sine wave of user-defined frequency (e.g., 60Hz) to maintain continuity and reduce spectral leakage.
   - Implemented smooth phase locking and amplitude matching at the junction point.

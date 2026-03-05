@@ -97,15 +97,114 @@ class Processor:
         return z
 
     @staticmethod
+    def _apply_time_controls(data, params, sampling_rate):
+        """
+        Applies Time-Domain manipulations: Phase Shift (P0/P1), Truncation, and Gap Filling.
+        Shared between Main Pipeline and STFT Pipeline.
+        """
+        # 1. Time Domain Phase Correction (P0 & P1/Shift)
+        p0_deg = params.get('p0', 0)
+        if abs(p0_deg) > 1e-6:
+            data = data * np.exp(1j * np.deg2rad(p0_deg))
+        
+        # P1: Time Shift (Points)
+        shift_pts = int(params.get('p1', 0))
+        if shift_pts != 0:
+            avg_val = np.mean(data)
+            if shift_pts > 0:
+                prepend = np.ones(shift_pts, dtype=data.dtype) * avg_val
+                data = np.concatenate((prepend, data))
+            elif shift_pts < 0:
+                slice_idx = -shift_pts
+                if slice_idx < len(data):
+                    data = data[slice_idx:]
+                else:
+                    data = np.array([])
+                    
+        # 2. Truncation (Start)
+        trunc_start = int(params.get('trunc_start', 0))
+        if trunc_start > 0:
+            fill_mode = params.get('trunc_fill_mode', 'cut')
+            if params.get('zero_fill_front', False) and fill_mode == 'cut':
+                fill_mode = 'zero'
+            
+            if fill_mode == 'zero':
+                if trunc_start < len(data):
+                    data[:trunc_start] = 0
+            
+            elif fill_mode == 'harmonic':
+                if trunc_start < len(data):
+                    fill_freq = float(params.get('trunc_fill_freq', 60.0))
+                    t_fill = np.arange(trunc_start) / sampling_rate
+                    
+                    target_val = data[trunc_start]
+                    
+                    if np.iscomplexobj(data):
+                        A = np.abs(target_val)
+                        phi_junction = np.angle(target_val)
+                    else:
+                        ref_slice = data[trunc_start:trunc_start+50] if (trunc_start+50 < len(data)) else data[trunc_start:]
+                        if len(ref_slice) > 0:
+                            local_rms = np.std(ref_slice)
+                            A = local_rms * 1.414
+                            if A < abs(target_val): A = abs(target_val) * 1.1 
+                        else:
+                            A = abs(target_val)
+                        if A == 0: A = 1.0
+                        
+                        ratio = target_val / A
+                        ratio = max(-1.0, min(1.0, ratio))
+                        phi_junction = np.arccos(ratio)
+                        
+                    t_end = trunc_start / sampling_rate
+                    phi_0 = phi_junction - (2 * np.pi * fill_freq * t_end)
+                    
+                    arg = (2 * np.pi * fill_freq * t_fill) + phi_0
+                    
+                    if np.iscomplexobj(data):
+                        wave = A * np.exp(1j * arg)
+                    else:
+                        wave = A * np.cos(arg)
+                    
+                    if trunc_start > 0:
+                        taper = np.linspace(0.0, 1.0, trunc_start)
+                        wave = wave * taper
+                    
+                    data[:trunc_start] = wave
+            else:
+                if trunc_start < len(data):
+                    data = data[trunc_start:]
+                else:
+                    data = np.array([])
+
+        # 3. Truncation (End)
+        trunc_end = int(params.get('trunc_end', 0))
+        if trunc_end > 0:
+            if trunc_end < len(data):
+                data = data[:-trunc_end]
+            else:
+                 data = np.array([])
+
+        return data
+
+    @staticmethod
     def process_fid(fid_data, params, sampling_rate):
         """
         Full pipeline: FID -> Spectrum
+        Returns: freqs, spectrum, fid_for_plot, fid_for_stft
         """
-        # Ensure float
+        # Ensure float/complex
         data = fid_data.astype(np.complex128) if np.iscomplexobj(fid_data) else fid_data.astype(np.float64)
         
+        # --- BRANCH 1: STFT Data (Minimal Processing) ---
+        # No Savgol (Baseline Correction), No SVD, No Apodization?
+        # User request: "Baseline correction ... affects my short time FFT"
+        # So we definitely skip Savgol.
+        data_stft = data.copy()
+        data_stft = Processor._apply_time_controls(data_stft, params, sampling_rate)
+
+        # --- BRANCH 2: Main Data (Full Processing) ---
         # 1. Savgol Baseline Correction (Time Domain)
-        # Often used in ZULF to remove DC offsets or low freq drifts in time domain before FFT
         if params.get('conv_points', 0) > 0:
             window = int(params['conv_points'])
             order = int(params['poly_order'])
@@ -114,161 +213,15 @@ class Processor:
                  smooth = scipy.signal.savgol_filter(data.real, window, order, mode='mirror')
                  data = data - smooth
 
-        # 2. Time Domain Phase Correction (P0 & P1/Shift) - Blake's Method
-        # In this mode, P0 is a constant phase multiply, and P1 is a time-shift.
-        # This replaces the frequency domain correction.
-        
-        # P0: Constant Phase (Degrees -> Radians)
-        p0_deg = params.get('p0', 0)
-        if abs(p0_deg) > 1e-6:
-            data = data * np.exp(1j * np.deg2rad(p0_deg))
-        
-        # P1: Time Shift (Points)
-        # Note: UI 'p1' (Phase 1 deg) is repurposed here as 'Time Shift (points)'
-        # Positive = Delay (prepend), Negative = Advance (cut end)
-        shift_pts = int(params.get('p1', 0))
-        if shift_pts != 0:
-            avg_val = np.mean(data) # Blake uses mean for padding
-            if shift_pts > 0:
-                # Prepend 'shift_pts' copies of mean, push signal to right
-                prepend = np.ones(shift_pts, dtype=data.dtype) * avg_val
-                # To maintain length: Prepend and cut end? 
-                # Blake's code: "prepend... np.concatenate" then "Truncation (from beginning)" later?
-                # Actually Blake's code: 
-                # if shift > 0: prepend_mean(..., shift, ...) -> Data grows.
-                # But typically we want to keep array size consistent or let it grow if allowed.
-                # Standard practice: Keep length or grow. Here we grow, FFT handles it.
-                data = np.concatenate((prepend, data))
-            elif shift_pts < 0:
-                # Negative shift: Cut the end?
-                # Blake: "savgol_td = savgol_td[-shift:]" -> This slices FROM THE END?
-                # No, [-neg:] means grabbing from index.
-                # Example: shift = -14. savgol_td[-(-14):] -> savgol_td[14:]
-                # This cuts the START. 
-                # Wait, checking Blake's: "savgol_td = savgol_td[-int(float(start_point_shift)):]"
-                # If shift = -14, this is savgol_td[14:]. This removes the FIRST 14 points (Shift Left / Advance).
-                slice_idx = -shift_pts
-                if slice_idx < len(data):
-                    data = data[slice_idx:]
-                else:
-                    data = np.array([])
-
-        # 3. Truncation & Trace Operations
-        # Front Truncation (Start)
-        trunc_start = int(params.get('trunc_start', 0))
-        
-        # 3. Truncation & Trace Operations
-        # Front Truncation (Start)
-        trunc_start = int(params.get('trunc_start', 0))
-        
-        if trunc_start > 0:
-            # Determine Fill Mode
-            fill_mode = params.get('trunc_fill_mode', 'cut')
-            # Backward compatibility for 'zero_fill_front' boolean
-            if params.get('zero_fill_front', False) and fill_mode == 'cut':
-                fill_mode = 'zero'
-            
-            if fill_mode == 'zero':
-                # Zero-Fill Front Mode: MUTE the first N points
-                if trunc_start < len(data):
-                    fill_val = 0 
-                    data[:trunc_start] = fill_val
-            
-            elif fill_mode == 'harmonic':
-                # Harmonic Fill Mode: Fill with Sine Wave
-                if trunc_start < len(data):
-                    fill_freq = float(params.get('trunc_fill_freq', 60.0))
-                    
-                    # Generate time vector for the fill region
-                    # Time runs from 0 to trunc_start/fs
-                    t_fill = np.arange(trunc_start) / sampling_rate
-                    
-                    # --- Continuity Optimization ---
-                    # We want the wave to seamlessly connect to data[trunc_start]
-                    # So f(t_end) should match data[trunc_start] in phase and amplitude.
-                    
-                    # 1. Get the target value at the junction
-                    target_val = data[trunc_start]
-                    
-                    # 2. Extract Amplitude (A) & Phase (phi)
-                    if np.iscomplexobj(data):
-                        A = np.abs(target_val)
-                        phi_junction = np.angle(target_val)
-                    else:
-                        # For real data, we can't fully determine Phase & Amplitude from one point 
-                        # without making assumptions. 
-                        # Assumption: The user wants a sinewave that *Passes Through* target_val
-                        # BUT has an amplitude consistent with local noise/signal.
-                        # If we just pick A=|target_val|, we risk A being near zero (zero crossing).
-                        # Better strategy: 
-                        #   Estimate Amplitude A from local region (e.g. 50pts RMS * sqrt(2))
-                        #   Calculate Phase phi such that A*cos(phi) = target_val
-                        ref_slice = data[trunc_start:trunc_start+50] if (trunc_start+50 < len(data)) else data[trunc_start:]
-                        if len(ref_slice) > 0:
-                            local_rms = np.std(ref_slice)
-                            A = local_rms * 1.414 # Estimate Peak Amp from RMS
-                            # Ensure A is at least large enough to cover target_val
-                            if A < abs(target_val): A = abs(target_val) * 1.1 
-                        else:
-                            A = abs(target_val)
-                        
-                        if A == 0: A = 1.0
-                        
-                        # Calculate required phase at junction: target = A * cos(theta)
-                        # theta = arccos(target/A)
-                        # We have ambiguity (plus/minus), pick positive slope?
-                        # Let's just pick one.
-                        # Clamp ratio to [-1, 1]
-                        ratio = target_val / A
-                        ratio = max(-1.0, min(1.0, ratio))
-                        phi_junction = np.arccos(ratio)
-                        
-                    # 3. Calculate Phase Offset (Start Phase)
-                    # We want: theta(t_end) = 2*pi*f*t_end + phi_0 = phi_junction
-                    # => phi_0 = phi_junction - 2*pi*f*t_end
-                    t_end = trunc_start / sampling_rate
-                    phi_0 = phi_junction - (2 * np.pi * fill_freq * t_end)
-                    
-                    # 4. Generate the wave
-                    # t_fill runs 0 to t_end
-                    arg = (2 * np.pi * fill_freq * t_fill) + phi_0
-                    
-                    if np.iscomplexobj(data):
-                        wave = A * np.exp(1j * arg)
-                    else:
-                        wave = A * np.cos(arg)
-                    
-                    # 5. Apply Taper: Linear fade-in from 0 to 1
-                    # This avoids a click at t=0 while preserving full continuity at t=end
-                    if trunc_start > 0:
-                        taper = np.linspace(0.0, 1.0, trunc_start)
-                        wave = wave * taper
-                    
-                    data[:trunc_start] = wave
-                    
-            else:
-                # Standard Truncate Mode: CUT the first N points
-                if trunc_start < len(data):
-                    data = data[trunc_start:]
-                else:
-                    data = np.array([])
-
-        # End Truncation
-        trunc_end = int(params.get('trunc_end', 0))
-        if trunc_end > 0:
-            # Note: Blake cuts from end differently based on his specific flow, 
-            # likely removing acquisition decay or bad end points.
-            if trunc_end < len(data):
-                data = data[:-trunc_end]
-            else:
-                 data = np.array([])
+        # 2. Time Domain Phase Correction & Truncation
+        data = Processor._apply_time_controls(data, params, sampling_rate)
 
         if len(data) == 0:
-            # Early return if empty
-            return np.array([0]), np.array([0])
+            return np.array([0]), np.array([0]), np.array([0]), np.array([0])
         
         # 4. SVD Denoising (Optional)
-        # SVD involves constructing a Hankel matrix which is N/2 x N/2. 
+        # SVD implies finding signal components.
+ 
         # For N=60000, this is 30000x30000, which requires ~7GB RAM (complex128 is 16 bytes/val -> 14GB!).
         # We must limit the size or skip SVD to prevent crashes on standard machines.
         MAX_SVD_POINTS = 10000 
@@ -336,7 +289,7 @@ class Processor:
             except Exception as e:
                 print(f"Baseline Correction Error: {e}")
             
-        return freqs, spectrum
+        return freqs, spectrum, data, data_stft
 
     @staticmethod
     def auto_phase_spectrum(spectrum):
