@@ -23,7 +23,7 @@ from src.loader import ProgressiveLoader
 from src.processing import Processor, CurveFitter
 from src.validator import SignalValidator
 from src.auto_phase import auto_phase_entropy, apply_phase_correction
-from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES
+from src.config import UI_WINDOW_TITLE, UI_WINDOW_SIZE, UI_PARAM_RANGES, DEFAULT_PEAK_HEIGHT
 
 class LoaderWorker(QThread):
     finished = Signal(object, float, int) # avg_data, sampling_rate, scan_count
@@ -844,7 +844,8 @@ class MainWindow(QMainWindow):
         
         # 1. Opacity Gain (Simple Slider)
         # Allows user to boost weak signals visibility
-        self.t2_opacity_gain = SliderSpinBox("Opacity Gain", 0.1, 10.0, 1.0, step=0.1, is_float=True)
+        # Range/Step tuned for better control over weak signals (up to 100x boost)
+        self.t2_opacity_gain = SliderSpinBox("Opacity Gain", 0.1, 100.0, 1.0, step=0.1, is_float=True)
         self.t2_opacity_gain.setToolTip("Amplify the visibility of weaker signals.")
         self.t2_opacity_gain.spinbox.setSuffix("x")
         self.t2_opacity_gain.valueChanged.connect(self.update_stft_t2_visuals)
@@ -856,6 +857,15 @@ class MainWindow(QMainWindow):
         self.t2_min_r2.setToolTip("Hide points with confidence (R2) below this value.")
         self.t2_min_r2.valueChanged.connect(self.update_stft_t2_visuals)
         t2_viz_layout.addWidget(self.t2_min_r2)
+        
+        # 3. Min Amplitude Threshold (Relative %)
+        # Using relative percentage (0-100%) is better for different signal scales
+        # than an absolute value slider.
+        self.t2_amp_thr = SliderSpinBox("Min Intensity %", 0.0, 100.0, 0.5, step=0.1, is_float=True)
+        self.t2_amp_thr.setToolTip("Hide points with intensity below this percentage of the maximum peak.")
+        self.t2_amp_thr.spinbox.setSuffix("%")
+        self.t2_amp_thr.valueChanged.connect(self.update_stft_t2_visuals)
+        t2_viz_layout.addWidget(self.t2_amp_thr)
         
         self.t2_viz_group.setLayout(t2_viz_layout)
         spec_layout_box.addWidget(self.t2_viz_group)
@@ -2177,7 +2187,17 @@ class MainWindow(QMainWindow):
             
             # --- Filtering Logic ---
             min_r2 = self.t2_min_r2.value() if hasattr(self, 't2_min_r2') else 0.5
-            mask = t2_r2s >= min_r2
+            
+            # Use Relative Threshold (%)
+            # If no data, threshold is 0
+            if len(data_t2) == 4 and len(t2_amps) > 0:
+                 max_amp = np.max(t2_amps)
+                 cutoff_pct = self.t2_amp_thr.value() if hasattr(self, 't2_amp_thr') else 0.0
+                 min_amp = max_amp * (cutoff_pct / 100.0)
+            else:
+                 min_amp = 0.0
+           
+            mask = (t2_r2s >= min_r2) & (t2_amps >= min_amp)
             
             # Apply Filter
             t2_freqs = t2_freqs[mask]
@@ -2216,10 +2236,20 @@ class MainWindow(QMainWindow):
                 # Apply to Alpha channel
                 rgba_colors[:, 3] = alphas
             
-            # 3. Plot
-            sizes = 30 
+            # 3. Plot - Stem/Lollipop Style
+            # Draw horizontal lines from 0 to T2 for each frequency
+            # This makes it easier to trace back to the Y-axis (Frequency)
+            
+            # Use hlines for efficient drawing of horizontal segments
+            # Colors array matches the number of lines
+            self.ax_t2_stft.hlines(t2_freqs, 0, t2_vals, colors=rgba_colors, linewidths=1.5)
+            
+            # Add dots at the tips for precise reading
+            sizes = 25 
             sc = self.ax_t2_stft.scatter(t2_vals, t2_freqs, c=rgba_colors, s=sizes, 
-                                            edgecolors='none', marker='o') # No outline for cleaner look with alpha
+                                            edgecolors='none', marker='o', zorder=3) 
+                                            
+            # Auto-scale X for New Data (only if not zoomed?)
                                             
             # Auto-scale X for New Data (only if not zoomed?)
             # For simplicity, auto-scale on first data load or significant change
