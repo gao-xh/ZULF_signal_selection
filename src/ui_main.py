@@ -835,6 +835,30 @@ class MainWindow(QMainWindow):
         self.btn_stft_t2_map.setToolTip("Fit decay curves for all frequency bins in the visible spectrogram range.")
         self.btn_stft_t2_map.clicked.connect(self.run_stft_t2_map)
         spec_layout_box.addWidget(self.btn_stft_t2_map)
+
+        # --- Sub-Group: T2 Map Visualization Controls ---
+        # Initially visible, but effect depends on map generation
+        self.t2_viz_group = QGroupBox("T2 Map Visualization")
+        t2_viz_layout = QVBoxLayout()
+        t2_viz_layout.setContentsMargins(2, 2, 2, 2)
+        
+        # 1. Opacity Gain (Simple Slider)
+        # Allows user to boost weak signals visibility
+        self.t2_opacity_gain = SliderSpinBox("Opacity Gain", 0.1, 10.0, 1.0, step=0.1, is_float=True)
+        self.t2_opacity_gain.setToolTip("Amplify the visibility of weaker signals.")
+        self.t2_opacity_gain.spinbox.setSuffix("x")
+        self.t2_opacity_gain.valueChanged.connect(self.update_stft_t2_visuals)
+        t2_viz_layout.addWidget(self.t2_opacity_gain)
+        
+        # 2. Min R2 Filter
+        # Allows filtering out bad fits
+        self.t2_min_r2 = SliderSpinBox("Min R2 (Trust)", 0.0, 1.0, 0.5, step=0.01, is_float=True)
+        self.t2_min_r2.setToolTip("Hide points with confidence (R2) below this value.")
+        self.t2_min_r2.valueChanged.connect(self.update_stft_t2_visuals)
+        t2_viz_layout.addWidget(self.t2_min_r2)
+        
+        self.t2_viz_group.setLayout(t2_viz_layout)
+        spec_layout_box.addWidget(self.t2_viz_group)
         
         spec_group.setLayout(spec_layout_box)
         proc_tab_layout.addWidget(spec_group)
@@ -2119,19 +2143,104 @@ class MainWindow(QMainWindow):
         # Colorbar - attach to Spectrogram axis (Middle)
         self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
         
-        # If we have a previously calculated T2 map, restore it?
-        # Or just clear it.
-        # Ideally store stft_t2_results.
-        if hasattr(self, 'current_stft_t2_map') and self.current_stft_t2_map is not None:
-             t2_freqs, t2_vals = self.current_stft_t2_map
-             self.ax_t2_stft.plot(t2_vals, t2_freqs, 'g.', markersize=2, alpha=0.6)
-             # Connect line
-             self.ax_t2_stft.plot(t2_vals, t2_freqs, 'g-', linewidth=0.5, alpha=0.3)
-             # Highlight outliers?
-             # Auto-scale X for T2
-             valid_t2 = t2_vals[t2_vals > 0]
-             if len(valid_t2) > 0:
-                 self.ax_t2_stft.set_xlim(0, np.percentile(valid_t2, 98) * 1.2) # Ignore top 2% outliers
+        # Plot T2 Map (Overlay or Separate) - now using dedicated method
+        self.update_stft_t2_visuals()
+        
+        self.canvas_stft.draw()
+
+    def update_stft_t2_visuals(self):
+        """Redraws the T2 data. Called by update_spectrogram or when opacity sliders change."""
+        import matplotlib.pyplot as plt
+        
+        # 1. Clear Plot
+        # We need to preserve limits possibly? Let's check.
+        # ax_t2_stft shares Y with Spectrogram, so Y limits are handled by Spectrogram update.
+        # X limits (Time) might need auto-scaling once, or keep user zoom.
+        
+        # To avoid flicker when just changing color, we could update the collection...
+        # But simpler to clear and replot for now.
+        self.ax_t2_stft.clear()
+        self.ax_t2_stft.grid(True, linestyle=':', alpha=0.5)
+        plt.setp(self.ax_t2_stft.get_yticklabels(), visible=False)
+        self.ax_t2_stft.set_xlabel("T2* Decay (s)")
+
+        # 2. Check Data
+        if not hasattr(self, 'current_stft_t2_map') or self.current_stft_t2_map is None:
+             self.canvas_stft.draw()
+             return
+
+        # Unpack: (freqs, t2s, r2s, amps/intercept)
+        # Backward compatibility: length 2 or 4
+        data_t2 = self.current_stft_t2_map
+        if len(data_t2) == 4:
+            t2_freqs, t2_vals, t2_r2s, t2_amps = data_t2
+            
+            # --- Filtering Logic ---
+            min_r2 = self.t2_min_r2.value() if hasattr(self, 't2_min_r2') else 0.5
+            mask = t2_r2s >= min_r2
+            
+            # Apply Filter
+            t2_freqs = t2_freqs[mask]
+            t2_vals = t2_vals[mask]
+            t2_r2s = t2_r2s[mask]
+            t2_amps = t2_amps[mask]
+            
+            if len(t2_vals) == 0:
+                self.canvas_stft.draw()
+                return
+
+            import matplotlib.colors as mcolors
+            
+            # --- Visualization Logic ---
+            # Color = Confidence (R2) -> Green(Good) to Red(Bad)
+            # Alpha = Amplitude * Gain
+            
+            # 1. Colors
+            cmap = plt.get_cmap('RdYlGn') 
+            norm_r2 = mcolors.Normalize(vmin=0.5, vmax=1.0)
+            rgba_colors = cmap(norm_r2(t2_r2s))
+            
+            # 2. Alpha (Opacity)
+            if len(t2_amps) > 0 and np.max(t2_amps) > 0:
+                norm_amps = t2_amps / np.max(t2_amps)
+                
+                # Apply Gain Slider
+                gain = self.t2_opacity_gain.value() if hasattr(self, 't2_opacity_gain') else 1.0
+                # Formula: alpha = (normalized_amp * gain) + base_visibility
+                # Base visibility ensures non-zero (e.g. 0.1)
+                # But user might want to hide very weak ones.
+                # Let's use simple linear scaling with clipping.
+                alphas = norm_amps * gain
+                alphas = np.clip(alphas, 0.0, 1.0) # Allow fully transparent
+                
+                # Apply to Alpha channel
+                rgba_colors[:, 3] = alphas
+            
+            # 3. Plot
+            sizes = 30 
+            sc = self.ax_t2_stft.scatter(t2_vals, t2_freqs, c=rgba_colors, s=sizes, 
+                                            edgecolors='none', marker='o') # No outline for cleaner look with alpha
+                                            
+            # Auto-scale X for New Data (only if not zoomed?)
+            # For simplicity, auto-scale on first data load or significant change
+            # Use current xlim to check if default [0, 1]
+            # current_xlim = self.ax_t2_stft.get_xlim()
+            # if current_xlim == (0.0, 1.0): 
+            if len(t2_vals) > 0:
+                # Add some margin
+                max_t2 = np.percentile(t2_vals, 98) * 1.2
+                if max_t2 > 0:
+                    self.ax_t2_stft.set_xlim(0, max_t2)
+            
+        else:
+            # Minimal fallback
+            t2_freqs, t2_vals = data_t2[:2]
+            self.ax_t2_stft.plot(t2_vals, t2_freqs, 'g.', markersize=4, alpha=0.6)
+            self.ax_t2_stft.plot(t2_vals, t2_freqs, 'k-', linewidth=0.5, alpha=0.1)
+            
+            valid_t2 = t2_vals[t2_vals > 0]
+            if len(valid_t2) > 0:
+                self.ax_t2_stft.set_xlim(0, np.percentile(valid_t2, 98) * 1.5) 
         
         self.canvas_stft.draw()
 
@@ -2143,7 +2252,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'stft_Sxx') or self.stft_Sxx is None:
             QMessageBox.warning(self, "No Spectrogram", "Please generate spectrogram first.")
             return
-
+            
         # Get Range
         f_min = self.freq_min.value()
         f_max = self.freq_max.value()
@@ -2174,6 +2283,8 @@ class MainWindow(QMainWindow):
         
         t2_results = []
         freq_results = []
+        r2_results = []
+        amp_results = []
         
         try:
             times = self.stft_t
@@ -2196,15 +2307,25 @@ class MainWindow(QMainWindow):
                     if 0 < t2 < 100.0: # Filter crazy values (e.g. > 100s T2 is unlikely)
                         t2_results.append(t2)
                         freq_results.append(f_val) # Keep original frequency (even if negative)
-                
-            # Store results: (frequencies, t2_values)
-            # Use separate variable to avoid conflict with rigorous validation results
-            self.current_stft_t2_map = (np.array(freq_results), np.array(t2_results))
+                        r2_results.append(res.get('r2', 0))
+                        
+                        # Get Amplitude (Intercept is ln(A))
+                        # Or just use Max Amplitude of the trace for robust visualization size
+                        # Using Intecept gives 'Initial Amplitude' A0, which is theoretically better,
+                        # but if fit is bad, intercept might be huge.
+                        # Safe bet: Max amplitude of the raw trace.
+                        amp_results.append(np.max(amps))
+                        
+            # Store results: (frequencies, t2_values, r2, amps)
+            self.current_stft_t2_map = (
+                np.array(freq_results), 
+                np.array(t2_results),
+                np.array(r2_results),
+                np.array(amp_results)
+            )
             
-            # Re-draw spectrogram to update the T2 plot (it checks current_stft_t2_map)
-            # Or just plot directly to save time?
-            # Creating full spectrogram is fast enough.
-            self.update_spectrogram()
+            # Update Visuals Only
+            self.update_stft_t2_visuals()
             
             count = len(t2_results)
             self.statusBar().showMessage(f"T2* Map Complete. Found {count} valid points.")
