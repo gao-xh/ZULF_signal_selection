@@ -547,6 +547,56 @@ class ProcessWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
+class T2MapWorker(QThread):
+    finished = Signal(object, object, object, object) # freqs, t2, r2, amp
+    error = Signal(str)
+    
+    def __init__(self, times, freqs, stft_Sxx, target_indices):
+        super().__init__()
+        self.times = times
+        self.freqs = freqs 
+        self.stft_Sxx = stft_Sxx
+        self.target_indices = target_indices
+
+    def run(self):
+        t2_results = []
+        freq_results = []
+        r2_results = []
+        amp_results = []
+        
+        try:
+            total = len(self.target_indices)
+            times_arr = self.times
+            
+            for i, idx in enumerate(self.target_indices):
+                if self.isInterruptionRequested():
+                    break
+                    
+                amps = self.stft_Sxx[idx, :]
+                f_val = self.freqs[idx]
+                
+                # Fit Envelope
+                res = CurveFitter.fit_envelope(times_arr, amps)
+                
+                if res['status'] == 'success':
+                    t2 = res['t2']
+                    if 0 < t2 < 100.0:
+                        t2_results.append(t2)
+                        freq_results.append(f_val)
+                        r2_results.append(res.get('r2', 0))
+                        amp_results.append(np.max(amps))
+            
+            self.finished.emit(
+                np.array(freq_results), 
+                np.array(t2_results),
+                np.array(r2_results),
+                np.array(amp_results)
+            )
+            
+        except Exception as e:
+            self.error.emit(str(e))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2107,9 +2157,23 @@ class MainWindow(QMainWindow):
             vmax = np.max(cmap_data)
             side_profile = np.mean(Sxx, axis=1)
 
-        # Plot Heatmap (Right)
-        # We assume f and t are correct for pcolormesh
-        mesh = self.ax_stft.pcolormesh(t, f, cmap_data, shading='auto', cmap='inferno', vmin=vmin, vmax=vmax)
+        # Plot Heatmap (Right) - Optimized with imshow
+        # We need to construct extent [left, right, bottom, top]
+        # t is 1D array of times, f is 1D array of frequencies
+        if len(t) > 1 and len(f) > 1:
+            dt = t[1] - t[0]
+            df = f[1] - f[0]
+            # extent needs the edges, not centers. Roughly:
+            extent = [t[0], t[-1], f[0], f[-1]]
+            
+            # Using aspect='auto' allows the plot to fill the area (non-square pixels)
+            # origin='lower' places the first row of matrix at the bottom (min freq)
+            mesh = self.ax_stft.imshow(cmap_data, aspect='auto', origin='lower', 
+                                      cmap='inferno', extent=extent, vmin=vmin, vmax=vmax,
+                                      interpolation='nearest')
+        else:
+            # Fallback for single point or empty
+            mesh = self.ax_stft.pcolormesh(t, f, cmap_data, shading='auto', cmap='inferno', vmin=vmin, vmax=vmax)
         
         # Plot Side Profile (Left)
         # Plot Frequency on Y, Amplitude on X
@@ -2289,12 +2353,7 @@ class MainWindow(QMainWindow):
         
         # Find indices
         freqs = self.stft_f
-        # Determine if folded or not? self.chk_spec_abs handles display, but freqs are stored.
-        # If folded, freqs are already positive. If full, we might have -5000 to +5000.
-        # f_min/max are usually positive inputs from UI.
-        
         # Simple mask based on what's visible
-        # If full spectrum, negative freqs might be excluded if UI only shows positive.
         mask = (np.abs(freqs) >= f_min) & (np.abs(freqs) <= f_max)
         target_indices = np.where(mask)[0]
         
@@ -2302,56 +2361,42 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Empty Range", "No frequency bins in current view.")
             return
 
-        if len(target_indices) > 5000:
+        if len(target_indices) > 20000:
              res = QMessageBox.question(self, "Large Calculation", 
                                         f"Going to fit {len(target_indices)} curves. This might take a while. Continue?",
                                         QMessageBox.Yes | QMessageBox.No)
              if res != QMessageBox.Yes: return
 
-        self.statusBar().showMessage(f"Calculating T2* Map for {len(target_indices)} bins...")
+        self.statusBar().showMessage(f"Calculating T2* Map for {len(target_indices)} bins (Background)...")
+        self.btn_stft_t2_map.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         
-        t2_results = []
-        freq_results = []
-        r2_results = []
-        amp_results = []
+        # Determine times from current stft data
+        times = self.stft_t
         
+        # Stop existing worker if any
+        if hasattr(self, 't2_worker') and self.t2_worker is not None and self.t2_worker.isRunning():
+            self.t2_worker.requestInterruption()
+            self.t2_worker.wait()
+            
+        self.t2_worker = T2MapWorker(times, freqs, self.stft_Sxx, target_indices)
+        self.t2_worker.finished.connect(self.on_t2_map_finished)
+        self.t2_worker.error.connect(lambda e: self.statusBar().showMessage(f"T2 Map Error: {e}"))
+        self.t2_worker.finished.connect(lambda: self.btn_stft_t2_map.setEnabled(True))
+        self.t2_worker.finished.connect(lambda: QApplication.restoreOverrideCursor())
+        self.t2_worker.error.connect(lambda: self.btn_stft_t2_map.setEnabled(True))
+        self.t2_worker.error.connect(lambda: QApplication.restoreOverrideCursor())
+        
+        self.t2_worker.start()
+
+    @Slot(object, object, object, object)
+    def on_t2_map_finished(self, freq_results, t2_results, r2_results, amp_results):
         try:
-            times = self.stft_t
-            
-            # Simple Loop
-            # Optimization: Pre-calculate log time if needed? 
-            # CurveFitter.fit_envelope does linregress which is fast but overhead adds up.
-            
-            for idx in target_indices:
-                amps = self.stft_Sxx[idx, :]
-                f_val = freqs[idx]
-                
-                # Use simplified fit logic to speed up
-                # Just Envelope Fit
-                res = CurveFitter.fit_envelope(times, amps)
-                
-                if res['status'] == 'success':
-                    t2 = res['t2']
-                    # Sanity Check
-                    if 0 < t2 < 100.0: # Filter crazy values (e.g. > 100s T2 is unlikely)
-                        t2_results.append(t2)
-                        freq_results.append(f_val) # Keep original frequency (even if negative)
-                        r2_results.append(res.get('r2', 0))
-                        
-                        # Get Amplitude (Intercept is ln(A))
-                        # Or just use Max Amplitude of the trace for robust visualization size
-                        # Using Intecept gives 'Initial Amplitude' A0, which is theoretically better,
-                        # but if fit is bad, intercept might be huge.
-                        # Safe bet: Max amplitude of the raw trace.
-                        amp_results.append(np.max(amps))
-                        
-            # Store results: (frequencies, t2_values, r2, amps)
             self.current_stft_t2_map = (
-                np.array(freq_results), 
-                np.array(t2_results),
-                np.array(r2_results),
-                np.array(amp_results)
+                freq_results, 
+                t2_results,
+                r2_results,
+                amp_results
             )
             
             # Update Visuals Only
@@ -2359,11 +2404,8 @@ class MainWindow(QMainWindow):
             
             count = len(t2_results)
             self.statusBar().showMessage(f"T2* Map Complete. Found {count} valid points.")
-            
         except Exception as e:
-            QMessageBox.critical(self, "T2 Map Failed", str(e))
-        finally:
-            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "T2 Map Update Failed", str(e))
 
     def on_spectrogram_click(self, event):
         """Handle clicks on Spectrogram/Side Profile to analyze T2* at that frequency"""
@@ -2390,7 +2432,7 @@ class MainWindow(QMainWindow):
         self.analyze_stft_t2(target_freq)
 
     def analyze_stft_t2(self, target_freq):
-        from scipy.stats import linregress
+        from scipy.optimize import curve_fit
         
         # 1. Find nearest frequency index
         # stft_f matches the rows of stft_Sxx
@@ -2425,57 +2467,80 @@ class MainWindow(QMainWindow):
         times = self.stft_t
         amps = self.stft_Sxx[idx, :]
         
-        # 3. Fit T2* (Exponential Decay)
-        # Strategy: Log-Linear Fit on the "tail" or significant data
+        # 3. Fit T2* (Exponential Decay with Offset)
+        # Strategy: Use curve_fit with Offset to handle noise floor
+        # Model: y = A * exp(-t/T2) + C
         
-        # A. Peak Detection & Thresholding
+        # A. Peak Detection & Start Point
         max_amp = np.max(amps)
         if max_amp == 0: return
         
-        # Strategy: Ignore the "rising" part (from 0 to peak) typically caused by STFT windowing/startup
-        # Start fitting from the maximum point onwards.
         idx_max = np.argmax(amps)
         
-        # Create a mask for the "decay" portion only:
-        # 1. Index >= idx_max (Post-peak)
-        # 2. Amplitude > 10% of max (Avoid noise tail)
-        mask_fit = np.zeros_like(amps, dtype=bool)
-        
-        # Only consider points after the peak
-        decay_slice = amps[idx_max:]
-        mask_decay = (decay_slice > max_amp * 0.1)
-        
-        # Map back to full array
-        mask_fit[idx_max:] = mask_decay
+        # Only fit from peak onwards
+        t_fit = times[idx_max:] 
+        a_fit = amps[idx_max:]
         
         # B. Check if we have enough points
-        if np.sum(mask_fit) < 4:
+        if len(t_fit) < 4:
             self.statusBar().showMessage(f"Not enough data to fit T2* at {actual_freq:.1f}Hz")
             return
             
-        t_fit = times[mask_fit]
-        a_fit = amps[mask_fit]
-        
         try:
-            # ln(y) = ln(A) - (1/T2)*t
-            # slope = -1/T2
-            slope, intercept, r_val, p_val, std_err = linregress(t_fit, np.log(a_fit))
+            # Shift time to start at 0 for fitting stability
+            t_start = t_fit[0]
+            t_shifted = t_fit - t_start
             
-            if slope < 0:
-                t2 = -1.0 / slope
+            # Initial Guesses
+            # C (Offset): Min of the tail
+            C_guess = np.min(a_fit)
+            # A (Amplitude): Max - C
+            A_guess = np.max(a_fit) - C_guess
+            # T2 (Decay): Time to drop to 1/e of A
+            # rough estimate: find point where val < A*0.37 + C
+            target_val = A_guess * 0.368 + C_guess
+            idx_1e = np.searchsorted(-a_fit, -target_val) # Search in descending
+            if idx_1e < len(t_shifted):
+                T2_guess = t_shifted[idx_1e]
             else:
-                t2 = 0 # Growing signal?
+                T2_guess = t_shifted[-1] / 2.0
                 
-            r2 = r_val**2
+            p0 = [A_guess, T2_guess, C_guess]
             
-            # Generate Fit Line for Plotting (across full time range)
-            fit_curve = np.exp(intercept + slope * times)
+            # Bounds: A>0, T2>0, C>=0
+            bounds = ([0, 0, 0], [np.inf, np.inf, np.max(a_fit)*1.5])
+            
+            def exp_offset(t, a, t2, c):
+                return a * np.exp(-t/t2) + c
+            
+            popt, pcov = curve_fit(exp_offset, t_shifted, a_fit, p0=p0, bounds=bounds, maxfev=2000)
+            
+            A_fit, T2_fit, C_fit = popt
+            
+            # Calculate R2
+            residuals = a_fit - exp_offset(t_shifted, *popt)
+            ss_res = np.sum(residuals**2)
+            ss_tot = np.sum((a_fit - np.mean(a_fit))**2)
+            if ss_tot > 0:
+                r2 = 1 - (ss_res / ss_tot)
+            else:
+                r2 = 0
+            
+            # Result for display (Full time range)
+            fit_curve = exp_offset(times - t_start, *popt)
+            # Mask fit curve before t_start for cleaner plot? Or show full extrapolation?
+            # Let's show it only from peak onwards to avoid confusion
+            fit_curve[:idx_max] = np.nan 
+            
+            t2 = T2_fit
             
         except Exception as e:
             print(f"Fit Error: {e}")
             t2 = 0
             r2 = 0
             fit_curve = np.zeros_like(times)
+            t_fit = times # Fallback for plot
+            a_fit = amps
 
         # 4. Switch to T2* Analysis Tab (Removed - now all visible)
         # self.tabs_analysis.setCurrentIndex(0) 
@@ -2485,14 +2550,14 @@ class MainWindow(QMainWindow):
         
         # Plot Raw Data
         self.ax_evo.plot(times, amps, 'b-', alpha=0.5, label='STFT Magnitude')
-        self.ax_evo.scatter(t_fit, a_fit, c='orange', s=10, zorder=3, label='Points used for Fit')
+        self.ax_evo.scatter(t_fit, a_fit, c='orange', s=15, zorder=3, label='Points fit region')
         
         # Plot Fit
         if t2 > 0:
-            label_fit = f'Fit T2*={t2*1000:.1f}ms (R2={r2:.2f})'
-            self.ax_evo.plot(times, fit_curve, 'r--', linewidth=2, label=label_fit)
+            label_fit = f'Fit T2*={t2*1000:.1f}ms (R2={r2:.2f})\nOffset C={C_fit:.2e}'
+            self.ax_evo.plot(times, fit_curve, 'r--', linewidth=2.5, label=label_fit)
         
-        self.ax_evo.set_title(f"T2* Analysis @ {actual_freq:.1f} Hz (Spectrogram Slice)")
+        self.ax_evo.set_title(f"T2* Analysis @ {actual_freq:.1f} Hz (Exp Decay + Offset)")
         self.ax_evo.set_xlabel("Time (s)")
         self.ax_evo.set_ylabel("Amplitude")
         self.ax_evo.legend()
