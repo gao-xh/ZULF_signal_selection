@@ -917,6 +917,12 @@ class MainWindow(QMainWindow):
         self.t2_amp_thr.valueChanged.connect(self.update_stft_t2_visuals)
         t2_viz_layout.addWidget(self.t2_amp_thr)
         
+        # 3.1 Min T2 Cutoff (Low Pass) - NEW (Optimizes background noise removal)
+        self.t2_min_cutoff = SliderSpinBox("Min T2 (s)", 0.0, 10.0, 0.05, step=0.05, is_float=True)
+        self.t2_min_cutoff.setToolTip("Hide points with T2 shorter than this value (removes fast-decay background artifacts).")
+        self.t2_min_cutoff.valueChanged.connect(self.update_stft_t2_visuals)
+        t2_viz_layout.addWidget(self.t2_min_cutoff)
+
         # 4. Log Scale Toggle (DOSY Style)
         self.chk_t2_log_scale = QCheckBox("Log T2 Scale (DOSY Style)")
         self.chk_t2_log_scale.setToolTip("Switch Y-axis (T2 Time) to logarithmic scale.")
@@ -2257,6 +2263,8 @@ class MainWindow(QMainWindow):
             
             # --- Filtering Logic ---
             min_r2 = self.t2_min_r2.value() if hasattr(self, 't2_min_r2') else 0.5
+            # Min T2 Filter (New)
+            min_t2_cutoff = self.t2_min_cutoff.value() if hasattr(self, 't2_min_cutoff') else 0.05
             
             # Use Relative Threshold (%)
             # If no data, threshold is 0
@@ -2267,7 +2275,7 @@ class MainWindow(QMainWindow):
             else:
                  min_amp = 0.0
            
-            mask = (t2_r2s >= min_r2) & (t2_amps >= min_amp)
+            mask = (t2_r2s >= min_r2) & (t2_amps >= min_amp) & (t2_vals >= min_t2_cutoff)
             
             # Apply Filter
             t2_freqs_f = t2_freqs[mask]
