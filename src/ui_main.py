@@ -1270,14 +1270,19 @@ class MainWindow(QMainWindow):
         
         self.tabs_main_display.addTab(self.panel_spectrogram, "Standard View")
 
-        # === Tab 2: New T2 Distribution (Placeholder) ===
+        # === Tab 2: New T2 Distribution ===
         self.panel_t2_new = QWidget()
         l_t2_new = QVBoxLayout(self.panel_t2_new)
-        l_t2_new.addWidget(QLabel("Experimental T2 Visualization Area\n(Discuss with user)"))
-        self.fig_t2_new = Figure(figsize=(5, 3))
+        l_t2_new.setContentsMargins(0, 0, 0, 0)
+        
+        # self.fig_t2_new = Figure(figsize=(5, 3)) 
+        self.fig_t2_new = Figure(figsize=(8, 4))
         self.canvas_t2_new = FigureCanvas(self.fig_t2_new)
+        self.canvas_t2_new.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
         self.ax_t2_new = self.fig_t2_new.add_subplot(111)
         self.toolbar_t2_new = NavigationToolbar(self.canvas_t2_new, self.panel_t2_new)
+        
         l_t2_new.addWidget(self.toolbar_t2_new)
         l_t2_new.addWidget(self.canvas_t2_new)
         
@@ -2400,7 +2405,13 @@ class MainWindow(QMainWindow):
                 
                 # 1. Clean Slate
                 self.fig_t2_new.clear()
-                
+                # Optimize Layout: Use constrained layout to handle resizing and label placement automatically
+                try:
+                    self.fig_t2_new.set_layout_engine('constrained') 
+                except Exception:
+                    # Fallback for older matplotlib versions
+                    self.fig_t2_new.set_tight_layout(True)
+
                 # Check Preferences
                 use_log_y = self.chk_t2_log_scale.isChecked() if hasattr(self, 'chk_t2_log_scale') else True
                 plot_type = self.combo_t2_plot_type.currentIndex() if hasattr(self, 'combo_t2_plot_type') else 0 # 0=Scatter, 1=Contour
@@ -2409,11 +2420,11 @@ class MainWindow(QMainWindow):
                 # To match standard DOSY: Top = Spectrum (Freq), Left = T2 Dist (or Right), Main = Map
                 # Let's do: Top (Spectrum), Bottom-Left (Map), Bottom-Right (T2 Proj)
                 from matplotlib.gridspec import GridSpec
-                gs = self.fig_t2_new.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], wspace=0.03, hspace=0.03)
+                gs = self.fig_t2_new.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], wspace=0.05, hspace=0.05)
                 
                 # Top: Spectrum (Average Sxx)
                 self.ax_top_spec = self.fig_t2_new.add_subplot(gs[0, 0])
-                self.ax_top_spec.xaxis.set_ticklabels([]) # Hide X labels
+                self.ax_top_spec.tick_params(axis='x', labelbottom=False) # Explicitly hide X labels for top plot
                 self.ax_top_spec.grid(True, linestyle=':', alpha=0.5)
                 self.ax_top_spec.set_ylabel("Intensity")
                 
@@ -2427,6 +2438,7 @@ class MainWindow(QMainWindow):
                 
                 # Center: Main Map
                 self.ax_t2_new = self.fig_t2_new.add_subplot(gs[1, 0], sharex=self.ax_top_spec)
+                self.ax_t2_new.tick_params(axis='x', labelbottom=True) # Ensure bottom X labels are VISIBLE
                 
                 # Right: T2 Projection (Histogram/Distribution)
                 self.ax_proj_new = self.fig_t2_new.add_subplot(gs[1, 1], sharey=self.ax_t2_new)
@@ -2507,9 +2519,13 @@ class MainWindow(QMainWindow):
                                         
                                     H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
                                     
-                                    # Smooth the histogram with larger sigma for "Traditional KDE" effect
-                                    # Increased sigma to connect isolated "eggs" into clusters
-                                    H_smooth = gaussian_filter(H.T, sigma=(5, 5)) 
+                                    # DOSY-Style Smoothing:
+                                    # Preserve Frequency Resolution (X) -> Small sigma (e.g. 0.8)
+                                    # Expand T2 Distribution (Y) -> Large sigma (e.g. 8.0)
+                                    # H.T shape is (ny, nx), so sigma=(sigma_y, sigma_x)
+                                    H_smooth = gaussian_filter(H.T, sigma=(8.0, 0.8)) 
+                                    
+                                    # Create "Traditional KDE" style Colormap (Turbo but transparent at low values)
                                     
                                     # Create "Traditional KDE" style Colormap (Turbo but transparent at low values)
                                     # "Starts from transparent"
