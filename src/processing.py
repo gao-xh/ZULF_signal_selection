@@ -318,22 +318,21 @@ class CurveFitter:
     def fit_envelope(times, amps):
         """
         Fits an exponential envelope to the peaks of the signal.
+        Auto-detects baseline/noise floor to improve T2 accuracy.
         Returns:
-            result_dict: {
-                't2': float (seconds),
-                'r2': float,
-                'slope': float,
-                'intercept': float,
-                'status': str,    # 'success' or error message
-                't_plot': array,
-                'y_plot': array,
-                'peaks_idx': array, # Indices of peaks used
-                'peaks_t': array,
-                'peaks_a': array
-            }
+            result_dict: { ... }
         """
-        # Find peaks (local maxima)
-        peaks, _ = find_peaks(amps)
+        # 1. Peak Detection
+        # We need a minimal threshold to avoid fitting pure noise floor "peaks"
+        # which would skew the slope to be flat (infinite T2).
+        max_amp = np.max(amps)
+        if max_amp <= 0:
+             return {'status': "Envelope Fit: Signal max <= 0.", 't2': 0}
+             
+        # Threshold: 5% of max or a small epsilon
+        thr = max(max_amp * 0.05, 1e-9)
+        
+        peaks, _ = find_peaks(amps, height=thr)
         
         if len(peaks) < 3:
             return {'status': "Envelope Fit: Not enough peaks found.", 't2': 0}
@@ -341,22 +340,70 @@ class CurveFitter:
         t_peaks = times[peaks]
         a_peaks = amps[peaks]
         
-        # Log-Linear Fit
-        valid = a_peaks > 0
-        if np.sum(valid) < 3:
-             return {'status': "Envelope Fit: Peaks too low.", 't2': 0}
-             
-        slope, intercept, r_val, _, _ = linregress(t_peaks[valid], np.log(a_peaks[valid]))
+        # 2. Baseline Estimation & Subtraction
+        # Estimate baseline from lower percentile (likely noise floor)
+        # Using 5th percentile is robust against outliers/peaks
+        baseline = np.percentile(amps, 5)
         
+        if baseline > 0:
+            # Check if this baseline makes sense (must be < max peak)
+            if baseline < 0.9 * np.max(a_peaks):
+                 # Subtract baseline to linearize the exponential decay
+                 # (A * exp(-t/T2) + C) -> (A * exp(-t/T2))
+                 # We subtract 99% of baseline to stay safe from log(0)
+                 a_peaks_corr = a_peaks - (baseline * 0.99)
+            else:
+                 a_peaks_corr = a_peaks # Baseline too high, unsafe to subtract
+        else:
+            a_peaks_corr = a_peaks
+
+        # 3. Log-Linear Fit
+        # Filter out non-positive values created by subtraction or noise
+        valid = a_peaks_corr > 0
+        if np.sum(valid) < 3:
+             return {'status': "Envelope Fit: Peaks too low after baseline sub.", 't2': 0}
+             
+        t_valid = t_peaks[valid]
+        a_valid = a_peaks_corr[valid]
+        
+        # Further optimization: Stop fitting if we hit the noise floor?
+        # If the tail is just noise, even after subtraction it might be messy.
+        # But baseline subtraction usually handles the "flat tail" issue by making it -inf.
+        
+        slope, intercept, r_val, _, _ = linregress(t_valid, np.log(a_valid))
+        
+        # Check for non-physical results
         if slope >= 0:
             return {'status': "Envelope Fit: Signal is growing (Slope >= 0).", 't2': 0}
             
         t2_env = -1.0 / slope
         r2 = r_val**2
         
-        # Generator plot data
+        # Generator plot data (for visualization)
+        # We plot the full model including baseline if we subtracted it
         t_plot = np.linspace(min(times), max(times), 100)
-        y_plot = np.exp(intercept + slope * t_plot)
+        y_decay = np.exp(intercept + slope * t_plot)
+        
+        # If we subtracted baseline, the "Fit" should strictly be the decay part
+        # But visually, if the user sees the raw data (with offset), we might want to add it back?
+        # Usually fit_envelope is used to get T2. The plot is secondary.
+        # Let's return the Decay component. 
+        y_plot = y_decay
+        if baseline > 0 and baseline < 0.9 * np.max(a_peaks):
+             y_plot += (baseline * 0.99)
+
+        return {
+            't2': t2_env,
+            'r2': r2,
+            'slope': slope,
+            'intercept': intercept,
+            'status': 'success',
+            't_plot': t_plot,
+            'y_plot': y_plot,
+            'peaks_idx': peaks,
+            'peaks_t': t_peaks,
+            'peaks_a': a_peaks
+        }
         
         return {
             'status': 'success',
