@@ -2228,6 +2228,12 @@ class MainWindow(QMainWindow):
 
         # Clear Tab 2 Plot as well if it exists
         if hasattr(self, 'ax_t2_new'):
+            # Temporarily reset scale to avoid "non-positive ylim" warnings during clear/reset
+            try:
+                self.ax_t2_new.set_yscale('linear')
+                self.ax_t2_new.set_xscale('linear')
+            except Exception: pass
+            
             self.ax_t2_new.clear()
             self.ax_t2_new.set_xlabel("T2* (s)")
             self.ax_t2_new.set_ylabel("Count")
@@ -2354,6 +2360,13 @@ class MainWindow(QMainWindow):
 
             # --- Visualization Logic for Tab 2 (DOSY Style: Elevation + Projection) ---
             if hasattr(self, 'fig_t2_new'):
+                # 0. Safety measure to prevent "non-positive ylim" warnings during clear
+                for ax in self.fig_t2_new.get_axes():
+                    try:
+                        ax.set_yscale('linear')
+                        ax.set_xscale('linear')
+                    except Exception: pass
+                
                 # 1. Clean Slate
                 self.fig_t2_new.clear()
                 
@@ -2396,6 +2409,7 @@ class MainWindow(QMainWindow):
                     x_data = t2_freqs_f[valid_mask]
                     y_data = t2_vals_f[valid_mask]
                     z_data = t2_amps_f[valid_mask]
+                    r2_data = t2_r2s_f[valid_mask] # Capture R2 for weighting
 
                     if len(x_data) > 0:
                         if plot_type == 1: # Contour / Density (KDE-like simulation)
@@ -2425,8 +2439,11 @@ class MainWindow(QMainWindow):
                                     Xi_plot, Yi_plot = np.meshgrid(xi, yi) # For plotting (Linear X, Linear Y + SetScale Log)
                                     
                                     # Interpolate
-                                    # rescaling points to be isotropic might help interpolation, but linear is usually fine
-                                    Zi = griddata(points, z_data, (Xi, Yi_grid_log), method='linear', fill_value=0)
+                                    # We weight the Amplitude by R2 to suppress artifacts from poor fits
+                                    # Z_visual = Amplitude * (R2)^2 (Squaring R2 penalizes bad fits more)
+                                    z_weighted = z_data * (r2_data ** 2)
+                                    
+                                    Zi = griddata(points, z_weighted, (Xi, Yi_grid_log), method='linear', fill_value=0)
                                     
                                 else:
                                     min_y, max_y = min(y_data), max(y_data)
@@ -2436,7 +2453,9 @@ class MainWindow(QMainWindow):
                                     Xi, Yi = np.meshgrid(xi, yi)
                                     Xi_plot, Yi_plot = Xi, Yi
                                     
-                                    Zi = griddata(points, z_data, (Xi, Yi), method='linear', fill_value=0)
+                                    # Weighted Interp
+                                    z_weighted = z_data * (r2_data ** 2)
+                                    Zi = griddata(points, z_weighted, (Xi, Yi), method='linear', fill_value=0)
 
                                 # Apply Gaussian Smoothing
                                 # Increased sigma to match higher resolution grid (keeps smoothing physically similar but smoother visually)
