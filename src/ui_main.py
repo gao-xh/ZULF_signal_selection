@@ -2234,7 +2234,7 @@ class MainWindow(QMainWindow):
         
         self.canvas_stft.draw()
 
-    def update_stft_t2_visuals(self):
+    def update_stft_t2_visuals(self, *args):
         """Redraws the T2 data. Called by update_spectrogram or when opacity sliders change."""
         if not hasattr(self, 'ax_t2_stft'):
             return
@@ -2262,6 +2262,12 @@ class MainWindow(QMainWindow):
             self.ax_t2_new.set_ylabel("Count")
             self.ax_t2_new.set_title("T2* Histogram Distribution")
             self.ax_t2_new.grid(True, alpha=0.3)
+            
+            # Clear Projection
+            if hasattr(self, 'ax_proj_new'):
+                self.ax_proj_new.clear()
+                self.ax_proj_new.yaxis.set_ticklabels([])
+                self.ax_proj_new.grid(True, axis='y', alpha=0.4)
 
         # 2. Check Data
         if not hasattr(self, 'current_stft_t2_map') or self.current_stft_t2_map is None:
@@ -2276,19 +2282,21 @@ class MainWindow(QMainWindow):
             t2_freqs, t2_vals, t2_r2s, t2_amps = data_t2
             
             # --- Filtering Logic ---
-            min_r2 = self.t2_min_r2.value() if hasattr(self, 't2_min_r2') else 0.5
-            # Min T2 Filter (New)
-            min_t2_cutoff = self.t2_min_cutoff.value() if hasattr(self, 't2_min_cutoff') else 0.05
+            # Explicitly cast values to avoid any widget object issues
+            min_r2 = float(self.t2_min_r2.value()) if hasattr(self, 't2_min_r2') else 0.5
+            # Min T2 Filter
+            min_t2_cutoff = float(self.t2_min_cutoff.value()) if hasattr(self, 't2_min_cutoff') else 0.05
             
             # Use Relative Threshold (%)
             # If no data, threshold is 0
             if len(data_t2) == 4 and len(t2_amps) > 0:
                  max_amp = np.max(t2_amps)
-                 cutoff_pct = self.t2_amp_thr.value() if hasattr(self, 't2_amp_thr') else 0.0
+                 cutoff_pct = float(self.t2_amp_thr.value()) if hasattr(self, 't2_amp_thr') else 0.0
                  min_amp = max_amp * (cutoff_pct / 100.0)
             else:
                  min_amp = 0.0
            
+            # Update plot logic: always update when this function is called
             mask = (t2_r2s >= min_r2) & (t2_amps >= min_amp) & (t2_vals >= min_t2_cutoff)
             
             # Apply Filter
@@ -2297,43 +2305,38 @@ class MainWindow(QMainWindow):
             t2_r2s_f = t2_r2s[mask]
             t2_amps_f = t2_amps[mask]
             
-            if len(t2_vals_f) == 0:
-                self.canvas_stft.draw()
-                if hasattr(self, 'canvas_t2_new'): self.canvas_t2_new.draw()
-                return
-            
             # --- Visualization Logic for Tab 1 (Lollipop / Scatter) ---
             # Color = Confidence (R2) -> Green(Good) to Red(Bad)
             # Alpha = Amplitude * Gain
             
-            cmap = plt.get_cmap('RdYlGn') 
-            norm_r2 = mcolors.Normalize(vmin=0.5, vmax=1.0)
-            rgba_colors = cmap(norm_r2(t2_r2s_f))
-            
-            # Alpha (Opacity)
-            if len(t2_amps_f) > 0 and np.max(t2_amps_f) > 0:
-                norm_amps = t2_amps_f / np.max(t2_amps_f)
+            if len(t2_vals_f) > 0:
+                cmap = plt.get_cmap('RdYlGn') 
+                norm_r2 = mcolors.Normalize(vmin=0.5, vmax=1.0)
+                rgba_colors = cmap(norm_r2(t2_r2s_f))
                 
-                # Apply Gain Slider
-                gain = self.t2_opacity_gain.value() if hasattr(self, 't2_opacity_gain') else 1.0
-                alphas = norm_amps * gain
-                alphas = np.clip(alphas, 0.0, 1.0) # Allow fully transparent
+                # Alpha (Opacity)
+                if len(t2_amps_f) > 0 and np.max(t2_amps_f) > 0:
+                    norm_amps = t2_amps_f / np.max(t2_amps_f)
+                    
+                    # Apply Gain Slider
+                    gain = float(self.t2_opacity_gain.value()) if hasattr(self, 't2_opacity_gain') else 1.0
+                    alphas = norm_amps * gain
+                    alphas = np.clip(alphas, 0.0, 1.0) # Allow fully transparent
+                    
+                    # Apply to Alpha channel
+                    rgba_colors[:, 3] = alphas
                 
-                # Apply to Alpha channel
-                rgba_colors[:, 3] = alphas
-            
-            # Plot - Stem/Lollipop Style (Standard View)
-            try:
-                # Draw horizontal lines from 0 to T2 for each frequency
-                self.ax_t2_stft.hlines(t2_freqs_f, 0, t2_vals_f, colors=rgba_colors, linewidths=1.5)
-                
-                # Add dots at the tips for precise reading
-                sizes = 25 
-                self.ax_t2_stft.scatter(t2_vals_f, t2_freqs_f, c=rgba_colors, s=sizes, 
-                                                edgecolors='none', marker='o', zorder=3) 
-                
-                # Auto-scale X for New Data
-                if len(t2_vals_f) > 0:
+                # Plot - Stem/Lollipop Style (Standard View)
+                try:
+                    # Draw horizontal lines from 0 to T2 for each frequency
+                    self.ax_t2_stft.hlines(t2_freqs_f, 0, t2_vals_f, colors=rgba_colors, linewidths=1.5)
+                    
+                    # Add dots at the tips for precise reading
+                    sizes = 25 
+                    self.ax_t2_stft.scatter(t2_vals_f, t2_freqs_f, c=rgba_colors, s=sizes, 
+                                                    edgecolors='none', marker='o', zorder=3) 
+                    
+                    # Auto-scale X for New Data
                     # robust max check
                     valid_vals = t2_vals_f[t2_vals_f > 0]
                     if len(valid_vals) > 0:
@@ -2343,8 +2346,11 @@ class MainWindow(QMainWindow):
                     else:
                         self.ax_t2_stft.set_xlim(0, 1)
 
-            except Exception as e:
-                print(f"Error plotting Standard View T2: {e}")
+                except Exception as e:
+                    print(f"Error plotting Standard View T2: {e}")
+            else:
+                self.ax_t2_stft.text(0.5, 0.5, "No Data (Adjust Filters)", 
+                                    ha='center', va='center', transform=self.ax_t2_stft.transAxes, color='red')
                 
             # --- Detail Fit (Right Panel) ---
             if hasattr(self, 'ax_t2_detail'):
@@ -2471,36 +2477,35 @@ class MainWindow(QMainWindow):
                                     # Interpolate
                                     # We weight the Amplitude by R2 to suppress artifacts from poor fits
                                     # Z_visual = Amplitude * (R2)^2 (Squaring R2 penalizes bad fits more)
-                                    z_weighted = z_data * (r2_data ** 2)
+                                    z_weighted = z_data * (r2_data ** 4) # Strong R2 weighting
                                     
-                                    Zi = griddata(points, z_weighted, (Xi, Yi_grid_log), method='linear', fill_value=0)
+                                    # Gaussian KDE approach using scatter -> histogram2d -> smooth
+                                    # For log-y scale, we must bin in logarithmic space
                                     
-                                else:
-                                    min_y, max_y = min(y_data), max(y_data)
-                                    yi = np.linspace(min_y, max_y, ny)
+                                    # Determine bins (logarithmic for Y if needed)
+                                    x_edges = np.linspace(min_x, max_x, nx)
+                                    if use_log_y:
+                                        y_edges = np.logspace(np.log10(min(y_data)), np.log10(max(y_data)), ny)
+                                    else:
+                                        y_edges = np.linspace(min(y_data), max(y_data), ny)
+                                        
+                                    H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
                                     
-                                    points = np.column_stack((x_data, y_data))
-                                    Xi, Yi = np.meshgrid(xi, yi)
-                                    Xi_plot, Yi_plot = Xi, Yi
+                                    # Smooth the histogram
+                                    H_smooth = gaussian_filter(H.T, sigma=(2, 2)) # Transpose for pcolormesh
                                     
-                                    # Weighted Interp
-                                    z_weighted = z_data * (r2_data ** 2)
-                                    Zi = griddata(points, z_weighted, (Xi, Yi), method='linear', fill_value=0)
-
-                                # Apply Gaussian Smoothing
-                                # Increased sigma to match higher resolution grid (keeps smoothing physically similar but smoother visually)
-                                Zi_smooth = gaussian_filter(Zi, sigma=3.0)
-                                
-                                # Plot Contourf
-                                # Using levels to show density
-                                map_obj = self.ax_t2_new.contourf(Xi_plot, Yi_plot, Zi_smooth, levels=50, cmap='turbo', extend='both')
-                                
-                                # Overlay original points as faint dots for truth reference
-                                self.ax_t2_new.scatter(x_data, y_data, c='k', s=2, alpha=0.1) 
-                                
-                                if use_log_y:
-                                     self.ax_t2_new.set_yscale('log')
-
+                                    # Mask zero values so they appear transparent (background) or distinct
+                                    # H_smooth = np.ma.masked_where(H_smooth <= 0, H_smooth)
+                                    
+                                    # Generate coordinate grids for pcolormesh
+                                    X, Y = np.meshgrid(xedges, yedges)
+                                    
+                                    # Pcolormesh is better than contourf for density maps
+                                    map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap='turbo', shading='auto')
+                                    
+                                    if use_log_y:
+                                         self.ax_t2_new.set_yscale('log')
+                                         
                             except Exception as e:
                                 print(f"Contour/Griddata Error: {e}")
                                 # Fallback to Scatter
