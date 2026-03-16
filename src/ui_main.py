@@ -2107,9 +2107,9 @@ class MainWindow(QMainWindow):
         # 6. Plot Layout (GridSpec) - MAIN SPECTROGRAM CANVAS
         self.fig_stft.clear()
         
-        # Define Grid: [Side Spectrum (10%), Spectrogram (60%), T2 Map (30%)] of Tab 1
-        # Reverting to 3-column layout in Tab 1
-        gs = self.fig_stft.add_gridspec(1, 3, width_ratios=[1, 5, 2], wspace=0.1)
+        # Define Grid: [Side Spectrum (10%) | Spectrogram (50%) | T2 Map (20%) | Detail Fit (20%)]
+        # Reverting to 4-column layout in Tab 1
+        gs = self.fig_stft.add_gridspec(1, 4, width_ratios=[1, 5, 2, 2], wspace=0.1)
         
         # Axis 1: Side Spectrum (Left)
         self.ax_side = self.fig_stft.add_subplot(gs[0])
@@ -2117,12 +2117,19 @@ class MainWindow(QMainWindow):
         # Axis 2: Spectrogram (Middle) - Share Y with Side Spectrum
         self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=self.ax_side)
         
-        # Axis 3: T2 Map (Right) - Share Y with Side Spectrum (Standard Lollipop)
+        # Axis 3: T2 Map (Right 1) - Share Y with Side Spectrum (Standard Lollipop)
         self.ax_t2_stft = self.fig_stft.add_subplot(gs[2], sharey=self.ax_side)
         self.ax_t2_stft.set_xlabel("T2* Decay (s)")
         self.ax_t2_stft.grid(True, linestyle=':', alpha=0.5)
-        # Hide Y Tick Labels for T2 Map (shared)
         plt.setp(self.ax_t2_stft.get_yticklabels(), visible=False)
+
+        # Axis 4: Detail Fit (Right 2) - Independent Y (Amplitude)
+        # This is where the single T2 fit will be shown
+        self.ax_t2_detail = self.fig_stft.add_subplot(gs[3])
+        self.ax_t2_detail.set_xlabel("Time (s)")
+        self.ax_t2_detail.set_title("Select a Freq")
+        self.ax_t2_detail.yaxis.tick_right() # Move ticks to right side
+        self.ax_t2_detail.grid(True, alpha=0.3)
 
         # Calculate Log Scale
         if self.chk_spec_log.isChecked():
@@ -2307,7 +2314,43 @@ class MainWindow(QMainWindow):
 
             except Exception as e:
                 print(f"Error plotting Standard View T2: {e}")
-                self.ax_t2_stft.text(0.5, 0.5, "Plot Error", ha='center', transform=self.ax_t2_stft.transAxes)
+                
+            # --- Detail Fit (Right Panel) ---
+            if hasattr(self, 'ax_t2_detail'):
+                self.ax_t2_detail.clear()
+                if hasattr(self, 'current_t2_detail_data') and self.current_t2_detail_data:
+                     try:
+                         d = self.current_t2_detail_data
+                         times = d.get('times', [])
+                         amps = d.get('amps', [])
+                         t_fit = d.get('t_fit', [])
+                         a_fit = d.get('a_fit', [])
+                         fit_curve = d.get('fit_curve', None)
+                         
+                         self.ax_t2_detail.plot(times, amps, 'b-', alpha=0.3, label='Data')
+                         self.ax_t2_detail.scatter(t_fit, a_fit, c='orange', s=10, zorder=3, alpha=0.6)
+                         
+                         title_str = f"Freq: {d.get('freq',0):.1f} Hz"
+                         
+                         if fit_curve is not None and len(fit_curve) == len(times):
+                             self.ax_t2_detail.plot(times, fit_curve, 'r--', linewidth=2, label=f"T2*={d.get('t2',0)*1000:.1f}ms")
+                         
+                         self.ax_t2_detail.set_title(title_str, fontsize=9)
+                         self.ax_t2_detail.legend(fontsize=7, loc='upper right', frameon=False)
+                         self.ax_t2_detail.yaxis.tick_right()
+                         self.ax_t2_detail.grid(True, alpha=0.3)
+                         self.ax_t2_detail.set_xlabel("Time (s)", fontsize=8)
+                         # Set font sizes for ticks
+                         self.ax_t2_detail.tick_params(axis='both', which='major', labelsize=8)
+                         
+                     except Exception as e:
+                         print(f"Detail plot error: {e}")
+                         self.ax_t2_detail.text(0.5, 0.5, "Plot Error", ha='center')
+                else:
+                     self.ax_t2_detail.text(0.5, 0.5, "Click a peak\nto view fit", 
+                                           ha='center', va='center', transform=self.ax_t2_detail.transAxes, 
+                                           color='gray', fontsize=8)
+                     self.ax_t2_detail.axis('off')
 
             # --- Visualization Logic for Tab 2 (DOSY Style: Elevation + Projection) ---
             if hasattr(self, 'fig_t2_new'):
@@ -2681,6 +2724,24 @@ class MainWindow(QMainWindow):
             'ax': self.ax_evo,
             'canvas': self.canvas_evo
         }
+        
+        # --- Update Detail Plot (Standard View) ---
+        self.current_t2_detail_data = {
+            'times': times,
+            'amps': amps,
+            't_fit': t_fit,
+            'a_fit': a_fit,
+            'fit_curve': fit_curve,
+            'freq': actual_freq,
+            't2': t2,
+            'r2': r2 if 'r2' in locals() else 0
+        }
+        
+        # Call the updater (which now handles the detail plot)
+        if hasattr(self, 'update_stft_t2_visuals'):
+            self.update_stft_t2_visuals()
+            if hasattr(self, 'canvas_stft'):
+                self.canvas_stft.draw()
         
         self.canvas_evo.draw()
         self.statusBar().showMessage(f"Analyzed {actual_freq:.1f} Hz: T2* = {t2*1000:.1f} ms")
