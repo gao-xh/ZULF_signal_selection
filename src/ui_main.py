@@ -917,6 +917,23 @@ class MainWindow(QMainWindow):
         self.t2_amp_thr.valueChanged.connect(self.update_stft_t2_visuals)
         t2_viz_layout.addWidget(self.t2_amp_thr)
         
+        # 4. Log Scale Toggle (DOSY Style)
+        self.chk_t2_log_scale = QCheckBox("Log T2 Scale (DOSY Style)")
+        self.chk_t2_log_scale.setToolTip("Switch Y-axis (T2 Time) to logarithmic scale.")
+        self.chk_t2_log_scale.setChecked(True) # Default to Log for typical DOSY look
+        self.chk_t2_log_scale.stateChanged.connect(self.update_stft_t2_visuals)
+        t2_viz_layout.addWidget(self.chk_t2_log_scale)
+        
+        # 5. Plot Type (Scatter vs Contour)
+        row_type = QHBoxLayout()
+        row_type.addWidget(QLabel("Type:"))
+        self.combo_t2_plot_type = QComboBox()
+        self.combo_t2_plot_type.addItems(["Scatter (Points)", "Contour (Density)"])
+        self.combo_t2_plot_type.setToolTip("Scatter: Show individual peaks.\nContour: Show smoothed density map (DOSY style).")
+        self.combo_t2_plot_type.currentIndexChanged.connect(self.update_stft_t2_visuals)
+        row_type.addWidget(self.combo_t2_plot_type)
+        t2_viz_layout.addLayout(row_type)
+        
         self.t2_viz_group.setLayout(t2_viz_layout)
         spec_layout_box.addWidget(self.t2_viz_group)
         
@@ -2267,27 +2284,154 @@ class MainWindow(QMainWindow):
                 # Apply to Alpha channel
                 rgba_colors[:, 3] = alphas
             
-            # Plot - Stem/Lollipop Style
-            # Draw horizontal lines from 0 to T2 for each frequency
-            self.ax_t2_stft.hlines(t2_freqs_f, 0, t2_vals_f, colors=rgba_colors, linewidths=1.5)
-            
-            # Add dots at the tips for precise reading
-            sizes = 25 
-            self.ax_t2_stft.scatter(t2_vals_f, t2_freqs_f, c=rgba_colors, s=sizes, 
-                                            edgecolors='none', marker='o', zorder=3) 
-                                            
-            # Auto-scale X for New Data (only if not zoomed?)
-            if len(t2_vals_f) > 0:
-                # Add some margin
-                max_t2 = np.percentile(t2_vals_f, 98) * 1.2
-                if max_t2 > 0:
-                    self.ax_t2_stft.set_xlim(0, max_t2)
+            # Plot - Stem/Lollipop Style (Standard View)
+            try:
+                # Draw horizontal lines from 0 to T2 for each frequency
+                self.ax_t2_stft.hlines(t2_freqs_f, 0, t2_vals_f, colors=rgba_colors, linewidths=1.5)
+                
+                # Add dots at the tips for precise reading
+                sizes = 25 
+                self.ax_t2_stft.scatter(t2_vals_f, t2_freqs_f, c=rgba_colors, s=sizes, 
+                                                edgecolors='none', marker='o', zorder=3) 
+                
+                # Auto-scale X for New Data
+                if len(t2_vals_f) > 0:
+                    # robust max check
+                    valid_vals = t2_vals_f[t2_vals_f > 0]
+                    if len(valid_vals) > 0:
+                        max_t2 = np.percentile(valid_vals, 98) * 1.2
+                        if max_t2 < 1e-6: max_t2 = 1.0 # fallback
+                        self.ax_t2_stft.set_xlim(0, max_t2)
+                    else:
+                        self.ax_t2_stft.set_xlim(0, 1)
 
-            # --- Visualization Logic for Tab 2 (Histogram) ---
-            if hasattr(self, 'ax_t2_new'):
-                # Simple Histogram of T2 Values
-                self.ax_t2_new.hist(t2_vals_f, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
-                self.ax_t2_new.set_title(f"T2 Distribution (N={len(t2_vals_f)})")
+            except Exception as e:
+                print(f"Error plotting Standard View T2: {e}")
+                self.ax_t2_stft.text(0.5, 0.5, "Plot Error", ha='center', transform=self.ax_t2_stft.transAxes)
+
+            # --- Visualization Logic for Tab 2 (DOSY Style: Elevation + Projection) ---
+            if hasattr(self, 'fig_t2_new'):
+                # 1. Clean Slate
+                self.fig_t2_new.clear()
+                
+                # Check Preferences
+                use_log_y = self.chk_t2_log_scale.isChecked() if hasattr(self, 'chk_t2_log_scale') else True
+                plot_type = self.combo_t2_plot_type.currentIndex() if hasattr(self, 'combo_t2_plot_type') else 0 # 0=Scatter, 1=Contour
+
+                # 2. Layout: GridSpec [Main (75%) | Projection (25%)]
+                from matplotlib.gridspec import GridSpec
+                gs = self.fig_t2_new.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.02)
+                
+                self.ax_t2_new = self.fig_t2_new.add_subplot(gs[0])
+                self.ax_proj_new = self.fig_t2_new.add_subplot(gs[1], sharey=self.ax_t2_new)
+                
+                if len(t2_vals_f) > 0:
+                    # --- Main Plot ---
+                    map_obj = None
+                    valid_mask = t2_vals_f > 1e-6 if use_log_y else np.ones_like(t2_vals_f, dtype=bool)
+                    
+                    x_data = t2_freqs_f[valid_mask]
+                    y_data = t2_vals_f[valid_mask]
+                    z_data = t2_amps_f[valid_mask]
+
+                    if len(x_data) > 0:
+                        if plot_type == 1: # Contour / Density (KDE-like simulation)
+                            # Create a regular grid
+                            try:
+                                from scipy.interpolate import griddata
+                                from scipy.ndimage import gaussian_filter
+                                
+                                # Grid Resolution
+                                nx, ny = 100, 100
+                                min_x, max_x = min(x_data), max(x_data)
+                                xi = np.linspace(min_x, max_x, nx)
+                                
+                                # Y-Grid (Linear in Log Space or Linear Space)
+                                if use_log_y:
+                                    min_log = np.log10(min(y_data))
+                                    max_log = np.log10(max(y_data))
+                                    yi_log = np.linspace(min_log, max_log, ny)
+                                    yi = np.power(10, yi_log)
+                                    Yi_for_interp = yi_log # Use log coordinates for interpolation
+                                    
+                                    # Prepare Data Points in (Linear X, Log Y)
+                                    points = np.column_stack((x_data, np.log10(y_data)))
+                                    
+                                    # Prepare Grid Points in (Linear X, Log Y)
+                                    Xi, Yi_grid_log = np.meshgrid(xi, yi_log)
+                                    Xi_plot, Yi_plot = np.meshgrid(xi, yi) # For plotting (Linear X, Linear Y + SetScale Log)
+                                    
+                                    # Interpolate
+                                    Zi = griddata(points, z_data, (Xi, Yi_grid_log), method='linear', fill_value=0)
+                                    
+                                else:
+                                    min_y, max_y = min(y_data), max(y_data)
+                                    yi = np.linspace(min_y, max_y, ny)
+                                    
+                                    points = np.column_stack((x_data, y_data))
+                                    Xi, Yi = np.meshgrid(xi, yi)
+                                    Xi_plot, Yi_plot = Xi, Yi
+                                    
+                                    Zi = griddata(points, z_data, (Xi, Yi), method='linear', fill_value=0)
+
+                                # Apply Gaussian Smoothing to simulate KDE / continuous field
+                                # Sigma controls the "blur" radius
+                                Zi_smooth = gaussian_filter(Zi, sigma=1.5)
+                                
+                                # Plot Contourf
+                                # Using levels to show density
+                                map_obj = self.ax_t2_new.contourf(Xi_plot, Yi_plot, Zi_smooth, levels=20, cmap='turbo', extend='both')
+                                
+                                # Overlay original points as faint dots for truth reference
+                                self.ax_t2_new.scatter(x_data, y_data, c='k', s=2, alpha=0.1) 
+                                
+                                if use_log_y:
+                                     self.ax_t2_new.set_yscale('log')
+
+                            except Exception as e:
+                                print(f"Contour/Griddata Error: {e}")
+                                # Fallback to Scatter
+                                map_obj = self.ax_t2_new.scatter(x_data, y_data, c=z_data, cmap='turbo', s=30, alpha=0.8, edgecolors='none')
+                        else:
+                            # Standard Scatter
+                            map_obj = self.ax_t2_new.scatter(
+                                x_data, y_data, c=z_data, cmap='turbo', s=30, alpha=0.8, edgecolors='none'
+                            )
+                            if use_log_y:
+                                 self.ax_t2_new.set_yscale('log')
+
+                    # --- Side Projection (T2 Histogram / Spectrum) ---
+                    if len(y_data) > 0:
+                         if use_log_y:
+                            min_t2 = np.min(y_data)
+                            max_t2 = np.max(y_data) * 1.5
+                            bins = np.logspace(np.log10(min_t2), np.log10(max_t2), 50)
+                            self.ax_proj_new.hist(y_data, bins=bins, orientation='horizontal', 
+                                                 color='gray', alpha=0.6, density=False)
+                         else:
+                            self.ax_proj_new.hist(y_data, bins=50, orientation='horizontal', 
+                                                 color='gray', alpha=0.6)
+                    
+                    # --- Styling ---
+                    self.ax_t2_new.set_xlabel("Frequency (Hz)")
+                    self.ax_t2_new.set_ylabel("T2* Duration (s)")
+                    self.ax_t2_new.set_title("Pseudo-2D Map (Freq vs T2*)")
+                    self.ax_t2_new.grid(True, linestyle='--', alpha=0.4, which='both')
+                    self.ax_proj_new.grid(True, axis='y', alpha=0.4)
+                    plt.setp(self.ax_proj_new.get_yticklabels(), visible=False)
+                    self.ax_proj_new.set_xlabel("Count")
+                    
+                    # Colorbar
+                    if map_obj:
+                         cbar = self.fig_t2_new.colorbar(map_obj, ax=self.ax_t2_new, location='top', pad=0.02)
+                         cbar.set_label("Peak Intensity")
+                    
+                    # Sync X Limit
+                    if hasattr(self, 'freq_min') and hasattr(self, 'freq_max'):
+                        self.ax_t2_new.set_xlim(self.freq_min.value(), self.freq_max.value())
+                        
+                else:
+                    self.ax_t2_new.text(0.5, 0.5, "No Data", ha='center', transform=self.ax_t2_new.transAxes)
 
         else:
             # Minimal fallback
