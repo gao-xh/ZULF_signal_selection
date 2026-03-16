@@ -2457,12 +2457,24 @@ class MainWindow(QMainWindow):
                                 # Grid Resolution - Increased for better visual quality
                                 nx, ny = 400, 400
                                 min_x, max_x = min(x_data), max(x_data)
+                                
+                                # Add padding (10%) to prevent hard cutoff at edges of data points
+                                x_range = max_x - min_x
+                                min_x = min_x - x_range * 0.1
+                                max_x = max_x + x_range * 0.1
+                                
                                 xi = np.linspace(min_x, max_x, nx)
                                 
                                 # Y-Grid (Linear in Log Space or Linear Space)
                                 if use_log_y:
                                     min_log = np.log10(min(y_data))
                                     max_log = np.log10(max(y_data))
+                                    
+                                    # Add padding to log range (10%)
+                                    log_range = max_log - min_log
+                                    min_log = min_log - log_range * 0.1
+                                    max_log = max_log + log_range * 0.1
+                                    
                                     yi_log = np.linspace(min_log, max_log, ny)
                                     yi = np.power(10, yi_log)
                                     Yi_for_interp = yi_log # Use log coordinates for interpolation
@@ -2476,8 +2488,8 @@ class MainWindow(QMainWindow):
                                     
                                     # Interpolate
                                     # We weight the Amplitude by R2 to suppress artifacts from poor fits
-                                    # Z_visual = Amplitude * (R2)^2 (Squaring R2 penalizes bad fits more)
-                                    z_weighted = z_data * (r2_data ** 4) # Strong R2 weighting
+                                    # Z_visual = Amplitude * (R2)^3 (Relaxed from 4 to 3 to show more structure)
+                                    z_weighted = z_data * (r2_data ** 3) 
                                     
                                     # Gaussian KDE approach using scatter -> histogram2d -> smooth
                                     # For log-y scale, we must bin in logarithmic space
@@ -2485,23 +2497,65 @@ class MainWindow(QMainWindow):
                                     # Determine bins (logarithmic for Y if needed)
                                     x_edges = np.linspace(min_x, max_x, nx)
                                     if use_log_y:
-                                        y_edges = np.logspace(np.log10(min(y_data)), np.log10(max(y_data)), ny)
+                                        y_edges = np.logspace(min_log, max_log, ny) # Use computed log ranges
                                     else:
-                                        y_edges = np.linspace(min(y_data), max(y_data), ny)
+                                        # Linear Y padding logic
+                                        y_range = max(y_data) - min(y_data)
+                                        min_y_lin = min(y_data) - y_range * 0.1
+                                        max_y_lin = max(y_data) + y_range * 0.1
+                                        y_edges = np.linspace(min_y_lin, max_y_lin, ny)
                                         
                                     H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
                                     
-                                    # Smooth the histogram
-                                    H_smooth = gaussian_filter(H.T, sigma=(2, 2)) # Transpose for pcolormesh
+                                    # Smooth the histogram with larger sigma for "Traditional KDE" effect
+                                    # Increased sigma to connect isolated "eggs" into clusters
+                                    H_smooth = gaussian_filter(H.T, sigma=(5, 5)) 
                                     
-                                    # Mask zero values so they appear transparent (background) or distinct
-                                    # H_smooth = np.ma.masked_where(H_smooth <= 0, H_smooth)
+                                    # Create "Traditional KDE" style Colormap (Turbo but transparent at low values)
+                                    # "Starts from transparent"
+                                    try:
+                                        from matplotlib.colors import LinearSegmentedColormap
+                                        # Get base turbo colormap
+                                        n_colors = 256
+                                        if hasattr(plt, 'colormaps'):
+                                             turbo_cmap = plt.colormaps['turbo']
+                                        else:
+                                             turbo_cmap = plt.get_cmap('turbo')
+                                        
+                                        turbo_colors = turbo_cmap(np.linspace(0, 1, n_colors))
+                                        
+                                        # Soften the Transparency Fade
+                                        # Old: 15% linear fade (0->1) -> Caused "hard eggs" look
+                                        # New: 25% fade, but using Sqrt curve to keep low-density tails visible
+                                        # Alpha = (x)^0.5 -> Ramps up quickly from 0
+                                        fade_len = int(n_colors * 0.25) 
+                                        
+                                        # Gamma correction for alpha: pow(x, 0.5) makes faint things more visible
+                                        alpha_curve = np.linspace(0, 1, fade_len) ** 0.6
+                                        alphas = np.ones(n_colors)
+                                        alphas[:fade_len] = alpha_curve
+                                        
+                                        turbo_colors[:, 3] = alphas
+                                        
+                                        custom_cmap = LinearSegmentedColormap.from_list('turbo_transparent', turbo_colors)
+                                    except Exception:
+                                        print("Error creating custom colormap, falling back to turbo")
+                                        custom_cmap = 'turbo'
+
+                                    # Generate coordinate grids for pcolormesh (Gouraud shading needs centers)
+                                    # Calculate bin centers to match dimensions of H (nx-1, ny-1)
+                                    x_centers = (xedges[:-1] + xedges[1:]) / 2
+                                    y_centers = (yedges[:-1] + yedges[1:]) / 2
+                                    X, Y = np.meshgrid(x_centers, y_centers)
                                     
-                                    # Generate coordinate grids for pcolormesh
-                                    X, Y = np.meshgrid(xedges, yedges)
+                                    # Update: Use shading='gouraud' for smoother interpolation if pcolormesh supports it,
+                                    # or use contourf for the "Traditional Scientific Plot" look
+                                    # For log-y, contourf can be tricky. Let's stick to pcolormesh with gouraud shading (if using linear grid mapping)
+                                    # But since X and Y are meshgrids, pcolormesh handles it.
                                     
-                                    # Pcolormesh is better than contourf for density maps
-                                    map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap='turbo', shading='auto')
+                                    # "Gouraud" shading interpolates colors between grid points -> Smooth visual
+                                    # With centers, X and Y have same shape as H_smooth
+                                    map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap=custom_cmap, shading='gouraud')
                                     
                                     if use_log_y:
                                          self.ax_t2_new.set_yscale('log')
@@ -2611,7 +2665,13 @@ class MainWindow(QMainWindow):
         # Determine basic amplitude threshold to skip processing noise
         overall_max = 0
         if len(self.stft_Sxx) > 0: overall_max = np.max(self.stft_Sxx)
-        base_thr = overall_max * 0.05 # Skip bottom 5% amplitude - speeds up map
+        # base_thr = overall_max * 0.05 # Old: Skip bottom 5% amplitude - speeds up map
+        
+        # New Logic: Be more inclusive so we can see "Low R2" points.
+        # If we filter too aggressively here (e.g. 5%), we might remove the very noise
+        # that users want to filter out manually with the slider later.
+        # Let's lower the hard threshold to verify if we get more points.
+        base_thr = overall_max * 0.01 # 1% threshold
         
         self.t2_worker = T2MapWorker(times, freqs, self.stft_Sxx, target_indices, amp_threshold=base_thr)
         self.t2_worker.finished.connect(self.on_t2_map_finished)
