@@ -2361,12 +2361,32 @@ class MainWindow(QMainWindow):
                 use_log_y = self.chk_t2_log_scale.isChecked() if hasattr(self, 'chk_t2_log_scale') else True
                 plot_type = self.combo_t2_plot_type.currentIndex() if hasattr(self, 'combo_t2_plot_type') else 0 # 0=Scatter, 1=Contour
 
-                # 2. Layout: GridSpec [Main (75%) | Projection (25%)]
+                # 2. Layout: GridSpec [Main + Top + Right]
+                # To match standard DOSY: Top = Spectrum (Freq), Left = T2 Dist (or Right), Main = Map
+                # Let's do: Top (Spectrum), Bottom-Left (Map), Bottom-Right (T2 Proj)
                 from matplotlib.gridspec import GridSpec
-                gs = self.fig_t2_new.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.02)
+                gs = self.fig_t2_new.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4], wspace=0.03, hspace=0.03)
                 
-                self.ax_t2_new = self.fig_t2_new.add_subplot(gs[0])
-                self.ax_proj_new = self.fig_t2_new.add_subplot(gs[1], sharey=self.ax_t2_new)
+                # Top: Spectrum (Average Sxx)
+                self.ax_top_spec = self.fig_t2_new.add_subplot(gs[0, 0])
+                self.ax_top_spec.xaxis.set_ticklabels([]) # Hide X labels
+                self.ax_top_spec.grid(True, linestyle=':', alpha=0.5)
+                self.ax_top_spec.set_ylabel("Intensity")
+                
+                # Plot Spectrum (if available)
+                if hasattr(self, 'stft_Sxx') and self.stft_Sxx is not None:
+                     # Calculate mean spectrum (projected on frequency)
+                     mean_spec = np.mean(self.stft_Sxx, axis=1) # Sxx is (Freq, Time)
+                     if hasattr(self, 'stft_f'):
+                         self.ax_top_spec.plot(self.stft_f, mean_spec, 'b-', linewidth=1)
+                         self.ax_top_spec.set_xlim(self.stft_f[0], self.stft_f[-1])
+                
+                # Center: Main Map
+                self.ax_t2_new = self.fig_t2_new.add_subplot(gs[1, 0], sharex=self.ax_top_spec)
+                
+                # Right: T2 Projection (Histogram/Distribution)
+                self.ax_proj_new = self.fig_t2_new.add_subplot(gs[1, 1], sharey=self.ax_t2_new)
+                self.ax_proj_new.yaxis.set_ticklabels([]) # Hide Y labels
                 
                 if len(t2_vals_f) > 0:
                     # --- Main Plot ---
@@ -2384,8 +2404,8 @@ class MainWindow(QMainWindow):
                                 from scipy.interpolate import griddata
                                 from scipy.ndimage import gaussian_filter
                                 
-                                # Grid Resolution
-                                nx, ny = 100, 100
+                                # Grid Resolution - Increased for better visual quality
+                                nx, ny = 400, 400
                                 min_x, max_x = min(x_data), max(x_data)
                                 xi = np.linspace(min_x, max_x, nx)
                                 
@@ -2405,6 +2425,7 @@ class MainWindow(QMainWindow):
                                     Xi_plot, Yi_plot = np.meshgrid(xi, yi) # For plotting (Linear X, Linear Y + SetScale Log)
                                     
                                     # Interpolate
+                                    # rescaling points to be isotropic might help interpolation, but linear is usually fine
                                     Zi = griddata(points, z_data, (Xi, Yi_grid_log), method='linear', fill_value=0)
                                     
                                 else:
@@ -2417,13 +2438,13 @@ class MainWindow(QMainWindow):
                                     
                                     Zi = griddata(points, z_data, (Xi, Yi), method='linear', fill_value=0)
 
-                                # Apply Gaussian Smoothing to simulate KDE / continuous field
-                                # Sigma controls the "blur" radius
-                                Zi_smooth = gaussian_filter(Zi, sigma=1.5)
+                                # Apply Gaussian Smoothing
+                                # Increased sigma to match higher resolution grid (keeps smoothing physically similar but smoother visually)
+                                Zi_smooth = gaussian_filter(Zi, sigma=3.0)
                                 
                                 # Plot Contourf
                                 # Using levels to show density
-                                map_obj = self.ax_t2_new.contourf(Xi_plot, Yi_plot, Zi_smooth, levels=20, cmap='turbo', extend='both')
+                                map_obj = self.ax_t2_new.contourf(Xi_plot, Yi_plot, Zi_smooth, levels=50, cmap='turbo', extend='both')
                                 
                                 # Overlay original points as faint dots for truth reference
                                 self.ax_t2_new.scatter(x_data, y_data, c='k', s=2, alpha=0.1) 
@@ -2698,31 +2719,35 @@ class MainWindow(QMainWindow):
         # 4. Switch to T2* Analysis Tab (Removed - now all visible)
         # self.tabs_analysis.setCurrentIndex(0) 
         
-        # 5. Plot on ax_evo
-        self.ax_evo.clear()
-        
-        # Plot Raw Data
-        self.ax_evo.plot(times, amps, 'b-', alpha=0.5, label='STFT Magnitude')
-        self.ax_evo.scatter(t_fit, a_fit, c='orange', s=15, zorder=3, label='Points fit region')
-        
-        # Plot Fit
-        if t2 > 0:
-            label_fit = f'Fit T2*={t2*1000:.1f}ms (R2={r2:.2f})\nOffset C={C_fit:.2e}'
-            self.ax_evo.plot(times, fit_curve, 'r--', linewidth=2.5, label=label_fit)
-        
-        self.ax_evo.set_title(f"T2* Analysis @ {actual_freq:.1f} Hz (Exp Decay + Offset)")
-        self.ax_evo.set_xlabel("Time (s)")
-        self.ax_evo.set_ylabel("Amplitude")
-        self.ax_evo.legend()
-        self.ax_evo.grid(True, alpha=0.3)
+        # 5. Plot on ax_evo (If available - Legacy Tab)
+        if hasattr(self, 'ax_evo'):
+            self.ax_evo.clear()
+            
+            # Plot Raw Data
+            self.ax_evo.plot(times, amps, 'b-', alpha=0.5, label='STFT Magnitude')
+            self.ax_evo.scatter(t_fit, a_fit, c='orange', s=15, zorder=3, label='Points fit region')
+            
+            # Plot Fit
+            if t2 > 0:
+                label_fit = f'Fit T2*={t2*1000:.1f}ms (R2={r2:.2f})\nOffset C={C_fit:.2e}'
+                self.ax_evo.plot(times, fit_curve, 'r--', linewidth=2.5, label=label_fit)
+            
+            self.ax_evo.set_title(f"T2* Analysis @ {actual_freq:.1f} Hz (Exp Decay + Offset)")
+            self.ax_evo.set_xlabel("Time (s)")
+            self.ax_evo.set_ylabel("Amplitude")
+            self.ax_evo.legend()
+            self.ax_evo.grid(True, alpha=0.3)
+            
+            if hasattr(self, 'canvas_evo'):
+                 self.canvas_evo.draw()
         
         # Store state for advanced tools (Envelope, etc.) if they want to use them later
         # We mimic the structure used by plot_relaxation_results
         self.current_decay_data = {
             'times': times,
             'amps': amps,
-            'ax': self.ax_evo,
-            'canvas': self.canvas_evo
+            'ax': getattr(self, 'ax_evo', None),
+            'canvas': getattr(self, 'canvas_evo', None)
         }
         
         # --- Update Detail Plot (Standard View) ---
@@ -2743,7 +2768,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'canvas_stft'):
                 self.canvas_stft.draw()
         
-        self.canvas_evo.draw()
+        if hasattr(self, 'canvas_evo'):
+            self.canvas_evo.draw()
         self.statusBar().showMessage(f"Analyzed {actual_freq:.1f} Hz: T2* = {t2*1000:.1f} ms")
         
     def on_pick(self, event):
