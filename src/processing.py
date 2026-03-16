@@ -348,6 +348,13 @@ class CurveFitter:
         # 2. Estimate Baseline (C)
         # Robust estimation: 10th percentile of the tail
         c_est = np.percentile(y_slice, 10)
+        
+        # Determine if signal actually decays to baseline within the window
+        # If min value is still high (> 40% of max), it's likely a long T2 > Window
+        # In this case, subtracting c_est (which is just the end value) would distort the log-linear fit
+        if np.min(y_slice) > 0.4 * max_val:
+            c_est = 0
+            
         # Ensure C < A
         if c_est >= max_val * 0.95:
             c_est = 0 # Baseline too high, assume 0

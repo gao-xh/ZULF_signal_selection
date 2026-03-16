@@ -550,14 +550,17 @@ class ProcessWorker(QThread):
 
 class T2MapWorker(QThread):
     finished = Signal(object, object, object, object) # freqs, t2, r2, amp
+    progress = Signal(int)
     error = Signal(str)
     
-    def __init__(self, times, freqs, stft_Sxx, target_indices):
+    def __init__(self, times, freqs, stft_Sxx, target_indices, amp_threshold=0.0):
         super().__init__()
         self.times = times
         self.freqs = freqs 
         self.stft_Sxx = stft_Sxx
         self.target_indices = target_indices
+        self.min_amp_threshold = amp_threshold
+
 
     def run(self):
         t2_results = []
@@ -573,11 +576,22 @@ class T2MapWorker(QThread):
                 if self.isInterruptionRequested():
                     break
                     
+                # Update progress every 10 items or 1%
+                if i % 10 == 0:
+                    pct = int(100 * i / total)
+                    self.progress.emit(pct)
+
                 amps = self.stft_Sxx[idx, :]
                 f_val = self.freqs[idx]
                 
-                # Fit Envelope
-                res = CurveFitter.fit_envelope(times_arr, amps)
+                # Check amplitude first?
+                max_amp = np.max(amps)
+                if max_amp < self.min_amp_threshold: # Optimization: Skip low amplitude
+                     res = {'status': 'Low Amp', 't2': 0, 'r2': 0}
+                else:
+                     # Use 'robust' mode (Non-Linear Least Squares) as requested for max accuracy
+                     # This matches the Detail view logic exactly, at cost of speed.
+                     res = CurveFitter.fit_exponential_decay(times_arr, amps, mode='robust')
                 
                 if res['status'] == 'success':
                     t2 = res['t2']
@@ -585,7 +599,7 @@ class T2MapWorker(QThread):
                         t2_results.append(t2)
                         freq_results.append(f_val)
                         r2_results.append(res.get('r2', 0))
-                        amp_results.append(np.max(amps))
+                        amp_results.append(res.get('A', np.max(amps))) # Use fitted Amplitude or Max
             
             self.finished.emit(
                 np.array(freq_results), 
@@ -2589,18 +2603,37 @@ class MainWindow(QMainWindow):
             self.t2_worker.requestInterruption()
             self.t2_worker.wait()
             
-        self.t2_worker = T2MapWorker(times, freqs, self.stft_Sxx, target_indices)
+        # Determine basic amplitude threshold to skip processing noise
+        overall_max = 0
+        if len(self.stft_Sxx) > 0: overall_max = np.max(self.stft_Sxx)
+        base_thr = overall_max * 0.05 # Skip bottom 5% amplitude - speeds up map
+        
+        self.t2_worker = T2MapWorker(times, freqs, self.stft_Sxx, target_indices, amp_threshold=base_thr)
         self.t2_worker.finished.connect(self.on_t2_map_finished)
+        self.t2_worker.progress.connect(self.on_t2_map_progress) # NEW: Connect progress
         self.t2_worker.error.connect(lambda e: self.statusBar().showMessage(f"T2 Map Error: {e}"))
         self.t2_worker.finished.connect(lambda: self.btn_stft_t2_map.setEnabled(True))
-        self.t2_worker.finished.connect(lambda: QApplication.restoreOverrideCursor())
+        
+        # Cursor restore is handled in on_t2_map_finished now
+        # self.t2_worker.finished.connect(lambda: QApplication.restoreOverrideCursor())
+        
         self.t2_worker.error.connect(lambda: self.btn_stft_t2_map.setEnabled(True))
         self.t2_worker.error.connect(lambda: QApplication.restoreOverrideCursor())
         
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        
         self.t2_worker.start()
+
+    def on_t2_map_progress(self, pct):
+        self.progress_bar.setValue(pct)
+        # self.statusBar().showMessage(f"Generating T2, {pct}%") # Optional verbose
 
     @Slot(object, object, object, object)
     def on_t2_map_finished(self, freq_results, t2_results, r2_results, amp_results):
+        self.progress_bar.setValue(100)
+        QApplication.restoreOverrideCursor()
+        
         try:
             self.current_stft_t2_map = (
                 freq_results, 
@@ -3281,7 +3314,8 @@ class MainWindow(QMainWindow):
             line.remove()
         
         # Calculate
-        result = CurveFitter.fit_envelope(times, amps)
+        # Use robust exponential decay fitting instead of simple envelope
+        result = CurveFitter.fit_exponential_decay(times, amps, mode='fast')
         
         if result['status'] != 'success':
             self.lbl_adv_result.setText(result['status'])
@@ -3289,27 +3323,36 @@ class MainWindow(QMainWindow):
             
         t2_env = result['t2']
         r2 = result['r2']
+        if 'A' in result and 'C' in result:
+             # Reconstruct model for plotting
+             # The fit finds the peak, so we should too.
+             idx_max = np.argmax(amps)
+             t_peak = times[idx_max]
+             
+             # Reconstruct model for plotting
+             # t_model starts from t_peak
+             t_model = np.linspace(t_peak, times[-1], 200)
+             y_model = result['A'] * np.exp(-(t_model - t_peak)/t2_env) + result['C']
+             
+             # Scale X axis to ms if on ax_detail
+             t_model_plot = t_model * 1000 if ax == self.ax_detail else t_model
+             
+             ax.plot(t_model_plot, y_model, 'orange', linewidth=2, linestyle='--', label=f'Exp Fit (T2*={t2_env*1000:.1f}ms)')
+        else:
+             self.lbl_adv_result.setText("Exponential Fit: Missing Parameters")
+             
+        self.lbl_adv_result.setText(f"Exponential Fit: T2* = {t2_env*1000:.1f} ms, R2 = {r2:.3f}")
         
-        # Plot Fit
-        # Identify units scaling
-        t_plot_scaled = result['t_plot'] * 1000 if ax == self.ax_detail else result['t_plot']
+        # Add R2 to legend label
+        # Find the line we just added (last one) and update label
+        if ax.lines:
+            last_line = ax.lines[-1]
+            old_label = last_line.get_label()
+            if 'Exp Fit' in old_label:
+                last_line.set_label(f"{old_label}, R2={r2:.3f}")
         
-        ax.plot(t_plot_scaled, result['y_plot'], 
-                'orange', linewidth=2, linestyle='--', label=f'Env T2*={t2_env*1000:.1f}ms')
-        
-        # Plot Peaks
-        t_peaks_plot = result['peaks_t'] * 1000 if ax == self.ax_detail else result['peaks_t']
-        ax.plot(t_peaks_plot, result['peaks_a'], 'rx', markersize=5, label='Env Peaks')
-        
-        # Update legend (hide Env Peaks)
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        if 'Env Peaks' in by_label: del by_label['Env Peaks']
-        ax.legend(by_label.values(), by_label.keys(), fontsize='small')
-        
+        ax.legend(fontsize='small')
         canvas.draw()
-        
-        self.lbl_adv_result.setText(f"Envelope T2*: {t2_env*1000:.1f} ms (R2={r2:.3f})")
 
     def run_cosine_fit(self):
         if not hasattr(self, 'current_decay_data') or self.current_decay_data is None:
