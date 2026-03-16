@@ -2216,6 +2216,9 @@ class MainWindow(QMainWindow):
 
     def update_stft_t2_visuals(self):
         """Redraws the T2 data. Called by update_spectrogram or when opacity sliders change."""
+        if not hasattr(self, 'ax_t2_stft'):
+            return
+
         import matplotlib.pyplot as plt
         import matplotlib.colors as mcolors
         
@@ -2388,10 +2391,10 @@ class MainWindow(QMainWindow):
                 
                 # Plot Spectrum (if available)
                 if hasattr(self, 'stft_Sxx') and self.stft_Sxx is not None:
-                     # Calculate mean spectrum (projected on frequency)
-                     mean_spec = np.mean(self.stft_Sxx, axis=1) # Sxx is (Freq, Time)
+                     # Calculate MAX spectrum (projected on frequency) - Better for DOSY
+                     max_spec = np.max(self.stft_Sxx, axis=1) 
                      if hasattr(self, 'stft_f'):
-                         self.ax_top_spec.plot(self.stft_f, mean_spec, 'b-', linewidth=1)
+                         self.ax_top_spec.plot(self.stft_f, max_spec, 'b-', linewidth=1)
                          self.ax_top_spec.set_xlim(self.stft_f[0], self.stft_f[-1])
                 
                 # Center: Main Map
@@ -2404,7 +2407,12 @@ class MainWindow(QMainWindow):
                 if len(t2_vals_f) > 0:
                     # --- Main Plot ---
                     map_obj = None
-                    valid_mask = t2_vals_f > 1e-6 if use_log_y else np.ones_like(t2_vals_f, dtype=bool)
+                    # Enhanced Filtering: Exclude T2 < 0.05s (Noise Floor) to clean up artifacts
+                    noise_floor_t2 = 0.05 
+                    if use_log_y:
+                        valid_mask = t2_vals_f > noise_floor_t2 # Use slightly stricter threshold
+                    else:
+                        valid_mask = t2_vals_f > 0.0
                     
                     x_data = t2_freqs_f[valid_mask]
                     y_data = t2_vals_f[valid_mask]
@@ -2504,10 +2512,11 @@ class MainWindow(QMainWindow):
                     plt.setp(self.ax_proj_new.get_yticklabels(), visible=False)
                     self.ax_proj_new.set_xlabel("Count")
                     
-                    # Colorbar
+                    # Colorbar - Moved to Right (Vertical)
                     if map_obj:
-                         cbar = self.fig_t2_new.colorbar(map_obj, ax=self.ax_t2_new, location='top', pad=0.02)
-                         cbar.set_label("Peak Intensity")
+                         # Attach to the rightmost axis (Projection)
+                         cbar = self.fig_t2_new.colorbar(map_obj, ax=self.ax_proj_new, location='right', pad=0.1)
+                         cbar.set_label("Intensity (Weighted)")
                     
                     # Sync X Limit
                     if hasattr(self, 'freq_min') and hasattr(self, 'freq_max'):
