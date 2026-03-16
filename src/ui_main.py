@@ -1209,73 +1209,44 @@ class MainWindow(QMainWindow):
 
         right_splitter.addWidget(spec_container)
         
-        # Bottom: Combined Analysis Area (Spectrogram + T2* Analysis)
-        # User requested side-by-side layout: Spectrogram Left, T2* Right
-        self.analysis_splitter = QSplitter(Qt.Horizontal)
+        # Bottom: Combined Analysis Area
+        # Refactored: STFT/Side/T2Lollipop are combined (Standard View), New View is a separate tab.
+        self.tabs_main_display = QTabWidget()
+        self.tabs_main_display.setTabPosition(QTabWidget.North)
 
-        # --- Panel 1: Spectrogram (Left) ---
+        # === Tab 1: Standard Visualization (Spectrogram + Side + T2 Lollipop) ===
         self.panel_spectrogram = QWidget()
         spec_tab_layout = QVBoxLayout(self.panel_spectrogram)
-        spec_tab_layout.setContentsMargins(0,0,0,0)
+        spec_tab_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.fig_stft = Figure(figsize=(5, 3))
+        self.fig_stft = Figure(figsize=(8, 4))
         self.canvas_stft = FigureCanvas(self.fig_stft)
         self.ax_stft = self.fig_stft.add_subplot(111)
         self.canvas_stft.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.toolbar_stft = NavigationToolbar(self.canvas_stft, self.panel_spectrogram)
         
-        # Connect Click Event (T2* Analysis from Spectrogram)
+        # Connect Click Event
         self.canvas_stft.mpl_connect('button_press_event', self.on_spectrogram_click)
         
         spec_tab_layout.addWidget(self.toolbar_stft)
         spec_tab_layout.addWidget(self.canvas_stft)
         
-        self.analysis_splitter.addWidget(self.panel_spectrogram)
+        self.tabs_main_display.addTab(self.panel_spectrogram, "Standard View")
 
-        # --- Panel 2: T2* Analysis (Right) ---
-        self.panel_t2 = QWidget()
-        ana_tab_layout = QVBoxLayout(self.panel_t2)
-        ana_tab_layout.setContentsMargins(0,0,0,0)
+        # === Tab 2: New T2 Distribution (Placeholder) ===
+        self.panel_t2_new = QWidget()
+        l_t2_new = QVBoxLayout(self.panel_t2_new)
+        l_t2_new.addWidget(QLabel("Experimental T2 Visualization Area\n(Discuss with user)"))
+        self.fig_t2_new = Figure(figsize=(5, 3))
+        self.canvas_t2_new = FigureCanvas(self.fig_t2_new)
+        self.ax_t2_new = self.fig_t2_new.add_subplot(111)
+        self.toolbar_t2_new = NavigationToolbar(self.canvas_t2_new, self.panel_t2_new)
+        l_t2_new.addWidget(self.toolbar_t2_new)
+        l_t2_new.addWidget(self.canvas_t2_new)
         
-        self.ana_splitter = QSplitter(Qt.Vertical) # Changed to Vertical internal split for T2 plots
+        self.tabs_main_display.addTab(self.panel_t2_new, "New T2 Analysis")
         
-        # Plot 1 (T2* Map / Evolution)
-        self.plot_container_1 = QWidget()
-        l_1 = QVBoxLayout(self.plot_container_1)
-        l_1.setContentsMargins(0,0,0,0)
-        self.fig_evo = Figure(figsize=(5, 3))
-        self.canvas_evo = FigureCanvas(self.fig_evo)
-        self.ax_evo = self.fig_evo.add_subplot(111)
-        self.canvas_evo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.toolbar_evo = NavigationToolbar(self.canvas_evo, self.plot_container_1)
-        l_1.addWidget(self.toolbar_evo)
-        l_1.addWidget(self.canvas_evo)
-        
-        # Plot 2 (Detail Curve - Hidden by default or secondary)
-        self.plot_container_2 = QWidget()
-        l_2 = QVBoxLayout(self.plot_container_2)
-        l_2.setContentsMargins(0,0,0,0)
-        self.fig_detail = Figure(figsize=(5, 3))
-        self.canvas_detail = FigureCanvas(self.fig_detail)
-        self.ax_detail = self.fig_detail.add_subplot(111)
-        self.canvas_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.toolbar_detail = NavigationToolbar(self.canvas_detail, self.plot_container_2)
-        l_2.addWidget(self.toolbar_detail)
-        l_2.addWidget(self.canvas_detail)
-
-        self.ana_splitter.addWidget(self.plot_container_1)
-        self.ana_splitter.addWidget(self.plot_container_2)
-        self.plot_container_2.hide()
-        
-        ana_tab_layout.addWidget(self.ana_splitter)
-        
-        self.analysis_splitter.addWidget(self.panel_t2)
-        
-        # Set Ratios: Spectrogram takes priority (e.g. 60%), T2 takes 40%
-        self.analysis_splitter.setStretchFactor(0, 3)
-        self.analysis_splitter.setStretchFactor(1, 2)
-
-        right_splitter.addWidget(self.analysis_splitter)
+        right_splitter.addWidget(self.tabs_main_display)
         
         self.main_splitter.addWidget(right_splitter)
         self.main_splitter.setStretchFactor(0, 0) 
@@ -2116,14 +2087,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "STFT Error", str(e))
             return
         
-        # 6. Plot Layout (GridSpec)
+        # 6. Plot Layout (GridSpec) - MAIN SPECTROGRAM CANVAS
         self.fig_stft.clear()
         
-        # Define Grid: [Side Spectrum (10%), Spectrogram (60%), T2 Map (30%)]
-        # Increased wspace slightly for labels
-        # Note: If T2 Map is not active yet, we can keep the old layout 
-        # or just allocate the space and leave it empty.
-        # Let's allocate it consistently so the spectrogram doesn't jump.
+        # Define Grid: [Side Spectrum (10%), Spectrogram (60%), T2 Map (30%)] of Tab 1
+        # Reverting to 3-column layout in Tab 1
         gs = self.fig_stft.add_gridspec(1, 3, width_ratios=[1, 5, 2], wspace=0.1)
         
         # Axis 1: Side Spectrum (Left)
@@ -2132,13 +2100,13 @@ class MainWindow(QMainWindow):
         # Axis 2: Spectrogram (Middle) - Share Y with Side Spectrum
         self.ax_stft = self.fig_stft.add_subplot(gs[1], sharey=self.ax_side)
         
-        # Axis 3: T2 Map (Right) - Share Y with Side Spectrum
+        # Axis 3: T2 Map (Right) - Share Y with Side Spectrum (Standard Lollipop)
         self.ax_t2_stft = self.fig_stft.add_subplot(gs[2], sharey=self.ax_side)
         self.ax_t2_stft.set_xlabel("T2* Decay (s)")
         self.ax_t2_stft.grid(True, linestyle=':', alpha=0.5)
         # Hide Y Tick Labels for T2 Map (shared)
         plt.setp(self.ax_t2_stft.get_yticklabels(), visible=False)
-        
+
         # Calculate Log Scale
         if self.chk_spec_log.isChecked():
             Sxx_dB = 20 * np.log10(Sxx + 1e-12)
@@ -2217,7 +2185,7 @@ class MainWindow(QMainWindow):
         # Colorbar - attach to Spectrogram axis (Middle)
         self._cbar_stft = self.fig_stft.colorbar(mesh, ax=self.ax_stft, label=cbar_label)
         
-        # Plot T2 Map (Overlay or Separate) - now using dedicated method
+        # Update T2 Map (Now drawing on the same Figure, Axis 3)
         self.update_stft_t2_visuals()
         
         self.canvas_stft.draw()
@@ -2225,22 +2193,27 @@ class MainWindow(QMainWindow):
     def update_stft_t2_visuals(self):
         """Redraws the T2 data. Called by update_spectrogram or when opacity sliders change."""
         import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
         
-        # 1. Clear Plot
-        # We need to preserve limits possibly? Let's check.
-        # ax_t2_stft shares Y with Spectrogram, so Y limits are handled by Spectrogram update.
-        # X limits (Time) might need auto-scaling once, or keep user zoom.
-        
-        # To avoid flicker when just changing color, we could update the collection...
-        # But simpler to clear and replot for now.
+        # 1. Clear Plots
         self.ax_t2_stft.clear()
         self.ax_t2_stft.grid(True, linestyle=':', alpha=0.5)
+        # Since it is shared Y, we usually hide ticks
         plt.setp(self.ax_t2_stft.get_yticklabels(), visible=False)
         self.ax_t2_stft.set_xlabel("T2* Decay (s)")
 
+        # Clear Tab 2 Plot as well if it exists
+        if hasattr(self, 'ax_t2_new'):
+            self.ax_t2_new.clear()
+            self.ax_t2_new.set_xlabel("T2* (s)")
+            self.ax_t2_new.set_ylabel("Count")
+            self.ax_t2_new.set_title("T2* Histogram Distribution")
+            self.ax_t2_new.grid(True, alpha=0.3)
+
         # 2. Check Data
         if not hasattr(self, 'current_stft_t2_map') or self.current_stft_t2_map is None:
-             self.canvas_stft.draw()
+             self.canvas_stft.draw() # Ensure canvas redraw if empty
+             if hasattr(self, 'canvas_t2_new'): self.canvas_t2_new.draw()
              return
 
         # Unpack: (freqs, t2s, r2s, amps/intercept)
@@ -2264,68 +2237,58 @@ class MainWindow(QMainWindow):
             mask = (t2_r2s >= min_r2) & (t2_amps >= min_amp)
             
             # Apply Filter
-            t2_freqs = t2_freqs[mask]
-            t2_vals = t2_vals[mask]
-            t2_r2s = t2_r2s[mask]
-            t2_amps = t2_amps[mask]
+            t2_freqs_f = t2_freqs[mask]
+            t2_vals_f = t2_vals[mask]
+            t2_r2s_f = t2_r2s[mask]
+            t2_amps_f = t2_amps[mask]
             
-            if len(t2_vals) == 0:
+            if len(t2_vals_f) == 0:
                 self.canvas_stft.draw()
+                if hasattr(self, 'canvas_t2_new'): self.canvas_t2_new.draw()
                 return
-
-            import matplotlib.colors as mcolors
             
-            # --- Visualization Logic ---
+            # --- Visualization Logic for Tab 1 (Lollipop / Scatter) ---
             # Color = Confidence (R2) -> Green(Good) to Red(Bad)
             # Alpha = Amplitude * Gain
             
-            # 1. Colors
             cmap = plt.get_cmap('RdYlGn') 
             norm_r2 = mcolors.Normalize(vmin=0.5, vmax=1.0)
-            rgba_colors = cmap(norm_r2(t2_r2s))
+            rgba_colors = cmap(norm_r2(t2_r2s_f))
             
-            # 2. Alpha (Opacity)
-            if len(t2_amps) > 0 and np.max(t2_amps) > 0:
-                norm_amps = t2_amps / np.max(t2_amps)
+            # Alpha (Opacity)
+            if len(t2_amps_f) > 0 and np.max(t2_amps_f) > 0:
+                norm_amps = t2_amps_f / np.max(t2_amps_f)
                 
                 # Apply Gain Slider
                 gain = self.t2_opacity_gain.value() if hasattr(self, 't2_opacity_gain') else 1.0
-                # Formula: alpha = (normalized_amp * gain) + base_visibility
-                # Base visibility ensures non-zero (e.g. 0.1)
-                # But user might want to hide very weak ones.
-                # Let's use simple linear scaling with clipping.
                 alphas = norm_amps * gain
                 alphas = np.clip(alphas, 0.0, 1.0) # Allow fully transparent
                 
                 # Apply to Alpha channel
                 rgba_colors[:, 3] = alphas
             
-            # 3. Plot - Stem/Lollipop Style
+            # Plot - Stem/Lollipop Style
             # Draw horizontal lines from 0 to T2 for each frequency
-            # This makes it easier to trace back to the Y-axis (Frequency)
-            
-            # Use hlines for efficient drawing of horizontal segments
-            # Colors array matches the number of lines
-            self.ax_t2_stft.hlines(t2_freqs, 0, t2_vals, colors=rgba_colors, linewidths=1.5)
+            self.ax_t2_stft.hlines(t2_freqs_f, 0, t2_vals_f, colors=rgba_colors, linewidths=1.5)
             
             # Add dots at the tips for precise reading
             sizes = 25 
-            sc = self.ax_t2_stft.scatter(t2_vals, t2_freqs, c=rgba_colors, s=sizes, 
+            self.ax_t2_stft.scatter(t2_vals_f, t2_freqs_f, c=rgba_colors, s=sizes, 
                                             edgecolors='none', marker='o', zorder=3) 
                                             
             # Auto-scale X for New Data (only if not zoomed?)
-                                            
-            # Auto-scale X for New Data (only if not zoomed?)
-            # For simplicity, auto-scale on first data load or significant change
-            # Use current xlim to check if default [0, 1]
-            # current_xlim = self.ax_t2_stft.get_xlim()
-            # if current_xlim == (0.0, 1.0): 
-            if len(t2_vals) > 0:
+            if len(t2_vals_f) > 0:
                 # Add some margin
-                max_t2 = np.percentile(t2_vals, 98) * 1.2
+                max_t2 = np.percentile(t2_vals_f, 98) * 1.2
                 if max_t2 > 0:
                     self.ax_t2_stft.set_xlim(0, max_t2)
-            
+
+            # --- Visualization Logic for Tab 2 (Histogram) ---
+            if hasattr(self, 'ax_t2_new'):
+                # Simple Histogram of T2 Values
+                self.ax_t2_new.hist(t2_vals_f, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
+                self.ax_t2_new.set_title(f"T2 Distribution (N={len(t2_vals_f)})")
+
         else:
             # Minimal fallback
             t2_freqs, t2_vals = data_t2[:2]
@@ -2336,7 +2299,10 @@ class MainWindow(QMainWindow):
             if len(valid_t2) > 0:
                 self.ax_t2_stft.set_xlim(0, np.percentile(valid_t2, 98) * 1.5) 
         
-        self.canvas_stft.draw()
+        # Final Draw
+        self.canvas_stft.draw()  # Update Tab 1
+        if hasattr(self, 'canvas_t2_new'):
+            self.canvas_t2_new.draw()  # Update Tab 2
 
     def run_stft_t2_map(self):
         """
