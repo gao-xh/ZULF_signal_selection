@@ -1286,7 +1286,7 @@ class MainWindow(QMainWindow):
         l_t2_new.addWidget(self.toolbar_t2_new)
         l_t2_new.addWidget(self.canvas_t2_new)
         
-        self.tabs_main_display.addTab(self.panel_t2_new, "New T2 Analysis")
+        self.tabs_main_display.addTab(self.panel_t2_new, "Global Distribution")
         
         right_splitter.addWidget(self.tabs_main_display)
         
@@ -2466,10 +2466,44 @@ class MainWindow(QMainWindow):
                                 from scipy.interpolate import griddata
                                 from scipy.ndimage import gaussian_filter
                                 
-                                # Grid Resolution - Increased for better visual quality
-                                nx, ny = 400, 400
-                                min_x, max_x = min(x_data), max(x_data)
+                                # Grid Resolution Linked to STFT Parameters
+                                # Get raw STFT resolutions
+                                stft_df = 1.0
+                                stft_dt = 1.0
+                                if hasattr(self, 'stft_f') and len(self.stft_f) > 1:
+                                     # Assuming linear spacing
+                                     stft_df = abs(self.stft_f[1] - self.stft_f[0])
+                                     if stft_df == 0: stft_df = 1.0
+                                     
+                                if hasattr(self, 'stft_t') and len(self.stft_t) > 1:
+                                     stft_dt = abs(self.stft_t[1] - self.stft_t[0])
+                                     if stft_dt == 0: stft_dt = 1.0
                                 
+                                min_x, max_x = min(x_data), max(x_data)
+                                x_range_val = max_x - min_x
+                                
+                                # Calculate optimal grid size based on STFT frequency resolution
+                                # We want approx 1 bin per physical STFT frequency step
+                                if stft_df > 0:
+                                    nx = int(x_range_val / stft_df)
+                                    # Clamp to reasonable range for performance (50 - 2000)
+                                    # If range is huge, we undersample; if tiny, we oversample slightly
+                                    nx = max(50, min(nx, 2000))
+                                else:
+                                    nx = 400
+
+                                # For Y (T2), link vertical resolution to STFT time step (dt)
+                                # Since T2 is derived from time decay, dt is the fundamental limit
+                                if use_log_y:
+                                    # Use total linear range to estimate number of discrete time steps
+                                    y_range_lin = max(y_data) - min(y_data)
+                                    ny = int(y_range_lin / stft_dt)
+                                else:
+                                    y_range_val = max(y_data) - min(y_data)
+                                    ny = int(y_range_val / stft_dt)
+                                    
+                                ny = max(50, min(ny, 1000))
+
                                 # Add padding (10%) to prevent hard cutoff at edges of data points
                                 x_range = max_x - min_x
                                 min_x = min_x - x_range * 0.1
@@ -2519,44 +2553,55 @@ class MainWindow(QMainWindow):
                                         
                                     H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
                                     
-                                    # DOSY-Style Smoothing:
-                                    # Preserve Frequency Resolution (X) -> Small sigma (e.g. 0.8)
-                                    # Expand T2 Distribution (Y) -> Large sigma (e.g. 8.0)
-                                    # H.T shape is (ny, nx), so sigma=(sigma_y, sigma_x)
-                                    H_smooth = gaussian_filter(H.T, sigma=(8.0, 0.8)) 
+                                    # DOSY-Style Smoothing (Resolution-Linked)
+                                    # Link (5, 0.5) preference to the new Physics-based Grid.
+                                    # Previous Reference: Sigma=(5.0, 0.5) on 400x400 Grid.
                                     
-                                    # Create "Traditional KDE" style Colormap (Turbo but transparent at low values)
+                                    # 1. Horizontal (Frequency): 
+                                    # On 400 grid, 0.5 pix was very sharp (~0.1%). 
+                                    # On Physics Grid (nx), 1 pixel = 1 STFT Bin. 
+                                    # Sigma=0.5 here acts as "Sub-bin resolution" sharpening or "Nearest Neighbor" feel.
+                                    # We keep this fixed to preserve spectral resolution.
+                                    sigma_x = 0.5 
                                     
-                                    # Create "Traditional KDE" style Colormap (Turbo but transparent at low values)
+                                    # 2. Vertical (T2 Time):
+                                    # On 400 grid, 5.0 pix was ~1.25% of screen height.
+                                    # This creates the vertical "strip" or "cloud" effect.
+                                    # We scale sigma_y dynamically with ny to maintain this visual ratio.
+                                    sigma_y = max(2.0, ny * 0.0125) # 1.25% of vertical range (e.g., 5px @ 400, 12px @ 1000)
+                                    
+                                    # H.T shape is (ny, nx). sigma=(sigma_y, sigma_x)
+                                    H_smooth = gaussian_filter(H.T, sigma=(sigma_y, sigma_x)) 
+                                    
+                                    # Create "Traditional KDE" style Colormap (Blues with transparency)
                                     # "Starts from transparent"
                                     try:
                                         from matplotlib.colors import LinearSegmentedColormap
-                                        # Get base turbo colormap
+                                        # Get base colormap (Monochrome 'Blues' as requested)
                                         n_colors = 256
                                         if hasattr(plt, 'colormaps'):
-                                             turbo_cmap = plt.colormaps['turbo']
+                                             # 'Blues' goes from White (0) to Dark Blue (1)
+                                             base_cmap = plt.colormaps['Blues']
                                         else:
-                                             turbo_cmap = plt.get_cmap('turbo')
+                                             base_cmap = plt.get_cmap('Blues')
                                         
-                                        turbo_colors = turbo_cmap(np.linspace(0, 1, n_colors))
+                                        cmap_colors = base_cmap(np.linspace(0, 1, n_colors))
                                         
                                         # Soften the Transparency Fade
-                                        # Old: 15% linear fade (0->1) -> Caused "hard eggs" look
-                                        # New: 25% fade, but using Sqrt curve to keep low-density tails visible
-                                        # Alpha = (x)^0.5 -> Ramps up quickly from 0
+                                        # Fade the alpha channel for the bottom 25%
                                         fade_len = int(n_colors * 0.25) 
                                         
-                                        # Gamma correction for alpha: pow(x, 0.5) makes faint things more visible
+                                        # Gamma correction for alpha: pow(x, 0.6) makes faint things more visible
                                         alpha_curve = np.linspace(0, 1, fade_len) ** 0.6
                                         alphas = np.ones(n_colors)
                                         alphas[:fade_len] = alpha_curve
                                         
-                                        turbo_colors[:, 3] = alphas
+                                        cmap_colors[:, 3] = alphas
                                         
-                                        custom_cmap = LinearSegmentedColormap.from_list('turbo_transparent', turbo_colors)
+                                        custom_cmap = LinearSegmentedColormap.from_list('blues_transparent', cmap_colors)
                                     except Exception:
-                                        print("Error creating custom colormap, falling back to turbo")
-                                        custom_cmap = 'turbo'
+                                        print("Error creating custom colormap, falling back to Blues")
+                                        custom_cmap = 'Blues'
 
                                     # Generate coordinate grids for pcolormesh (Gouraud shading needs centers)
                                     # Calculate bin centers to match dimensions of H (nx-1, ny-1)
@@ -2564,14 +2609,20 @@ class MainWindow(QMainWindow):
                                     y_centers = (yedges[:-1] + yedges[1:]) / 2
                                     X, Y = np.meshgrid(x_centers, y_centers)
                                     
-                                    # Update: Use shading='gouraud' for smoother interpolation if pcolormesh supports it,
-                                    # or use contourf for the "Traditional Scientific Plot" look
-                                    # For log-y, contourf can be tricky. Let's stick to pcolormesh with gouraud shading (if using linear grid mapping)
-                                    # But since X and Y are meshgrids, pcolormesh handles it.
-                                    
                                     # "Gouraud" shading interpolates colors between grid points -> Smooth visual
-                                    # With centers, X and Y have same shape as H_smooth
                                     map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap=custom_cmap, shading='gouraud')
+                                    
+                                    # Add Contour Lines (User Request: "Add contour lines")
+                                    try:
+                                        z_max = np.max(H_smooth)
+                                        if z_max > 0:
+                                            # Create levels from 10% to 90% of max
+                                            levels = np.linspace(z_max * 0.1, z_max * 0.95, 6)
+                                            # Use thin black lines with transparency for subtle effect
+                                            self.ax_t2_new.contour(X, Y, H_smooth, levels=levels, 
+                                                                  colors='black', linewidths=0.5, alpha=0.3)
+                                    except Exception as e_cont:
+                                        print(f"Contour warning: {e_cont}")
                                     
                                     if use_log_y:
                                          self.ax_t2_new.set_yscale('log')
@@ -2579,11 +2630,11 @@ class MainWindow(QMainWindow):
                             except Exception as e:
                                 print(f"Contour/Griddata Error: {e}")
                                 # Fallback to Scatter
-                                map_obj = self.ax_t2_new.scatter(x_data, y_data, c=z_data, cmap='turbo', s=30, alpha=0.8, edgecolors='none')
+                                map_obj = self.ax_t2_new.scatter(x_data, y_data, c=z_data, cmap='Blues', s=30, alpha=0.8, edgecolors='none')
                         else:
                             # Standard Scatter
                             map_obj = self.ax_t2_new.scatter(
-                                x_data, y_data, c=z_data, cmap='turbo', s=30, alpha=0.8, edgecolors='none'
+                                x_data, y_data, c=z_data, cmap='Blues', s=30, alpha=0.8, edgecolors='none'
                             )
                             if use_log_y:
                                  self.ax_t2_new.set_yscale('log')

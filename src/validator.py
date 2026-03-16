@@ -69,7 +69,7 @@ class SignalValidator:
             
         # Process Golden Spectrum
         # First, run initially to get spectrum for auto-phasing
-        freqs, raw_spec = self.processor.process_fid(golden_fid, processing_params, self.loader.sampling_rate)
+        freqs, raw_spec, _, _ = self.processor.process_fid(golden_fid, processing_params, self.loader.sampling_rate)
         
         # Auto Phase (if requested or not set)
         if processing_params.get('phase_mode') == 'auto':
@@ -79,7 +79,7 @@ class SignalValidator:
             print(f"Auto-Phase Locked: p0={p0:.2f}, p1={p1:.2f}")
             
             # Reprocess with locked phase
-            freqs, golden_spec = self.processor.process_fid(golden_fid, processing_params, self.loader.sampling_rate)
+            freqs, golden_spec, _, _ = self.processor.process_fid(golden_fid, processing_params, self.loader.sampling_rate)
         else:
             golden_spec = raw_spec
 
@@ -126,7 +126,7 @@ class SignalValidator:
         try:
             for n, fid in self.loader.stream_process(checkpoints):
                 # Process with LOCKED parameters
-                _, spec = self.processor.process_fid(fid, processing_params, self.loader.sampling_rate)
+                _, spec, _, _ = self.processor.process_fid(fid, processing_params, self.loader.sampling_rate)
                 
                 if detect_mode == 'real':
                     iter_data = np.real(spec)
