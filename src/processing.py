@@ -315,6 +315,116 @@ class CurveFitter:
     """
     
     @staticmethod
+    def fit_exponential_decay(times, data, mode='fast'):
+        """
+        Fits an exponential decay curve (A * exp(-t/T2) + C) to non-oscillating data
+        (e.g., STFT magnitude slices).
+        
+        Args:
+            times (array): Time vector
+            data (array): Signal amplitude vector (Magnitude)
+            mode (str): 'fast' (log-linear) or 'robust' (non-linear least squares)
+            
+        Returns:
+            dict with 't2', 'r2', 'status', etc.
+        """
+        # 1. Preprocessing: Find start of decay (Peak)
+        idx_max = np.argmax(data)
+        max_val = data[idx_max]
+        
+        if max_val <= 0:
+            return {'status': 'Signal too low', 't2': 0, 'r2': 0}
+            
+        # Slice from peak onwards
+        t_slice = times[idx_max:]
+        y_slice = data[idx_max:]
+        
+        if len(t_slice) < 5:
+             return {'status': 'Not enough points in tail', 't2': 0, 'r2': 0}
+             
+        # Shift time to 0 for stability
+        t_shift = t_slice - t_slice[0]
+        
+        # 2. Estimate Baseline (C)
+        # Robust estimation: 10th percentile of the tail
+        c_est = np.percentile(y_slice, 10)
+        # Ensure C < A
+        if c_est >= max_val * 0.95:
+            c_est = 0 # Baseline too high, assume 0
+            
+        # 3. Fitting
+        if mode == 'fast':
+            # linearized fit: ln(y - C) = ln(A) - t/T2
+            # Subtract baseline
+            y_lin = y_slice - c_est
+            # Filter valid (positive) points
+            mask = y_lin > 0
+            if np.sum(mask) < 3:
+                 return {'status': 'Decay buried in noise', 't2': 0, 'r2': 0}
+                 
+            # Stop fitting when signal drops too close to estimated noise floor (e.g. < 5% of max)
+            # This avoids fitting the "flat" noise tail which skews log-linear fit
+            # Find first index where signal drops below threshold
+            # threshold = max_val * 0.05
+            # mask_tail = y_lin > threshold
+            # final_mask = mask & mask_tail
+            final_mask = mask # Use all positive points for now or apply weight
+            
+            if np.sum(final_mask) < 3:
+                 return {'status': 'Signal drops too fast', 't2': 0, 'r2': 0}
+
+            try:
+                slope, intercept, r_val, _, _ = linregress(t_shift[final_mask], np.log(y_lin[final_mask]))
+                if slope >= 0:
+                     return {'status': 'Growing signal', 't2': 0, 'r2': 0}
+                
+                t2 = -1.0 / slope
+                r2 = r_val**2
+                a_fit = np.exp(intercept)
+                
+                return {'status': 'success', 't2': t2, 'r2': r2, 'A': a_fit, 'C': c_est}
+            except Exception:
+                return {'status': 'Linear fit failed', 't2': 0, 'r2': 0}
+                
+        elif mode == 'robust':
+            # Non-linear least squares fit (scipy.optimize.curve_fit)
+            # Model: y = A * exp(-t/T2) + C
+            # Initial Guess
+            a_guess = max_val - c_est
+            # Rough T2 guess: time to drop to 1/e
+            target = a_guess * 0.368 + c_est
+            idx_1e = np.searchsorted(-y_slice, -target) # Search in descending (roughly)
+            # Find closest index
+            if idx_1e < len(t_shift):
+                t2_guess = t_shift[idx_1e]
+            else:
+                t2_guess = t_shift[-1] / 3.0
+            
+            p0 = [a_guess, t2_guess, c_est]
+            bounds = ([0, 0, 0], [np.inf, np.inf, max_val])
+            
+            try:
+                def model_func(t, a, t2, c):
+                    return a * np.exp(-t/t2) + c
+                    
+                popt, pcov = curve_fit(model_func, t_shift, y_slice, p0=p0, bounds=bounds, maxfev=1000)
+                
+                a_opt, t2_opt, c_opt = popt
+                
+                # R2 Calculation
+                residuals = y_slice - model_func(t_shift, *popt)
+                ss_res = np.sum(residuals**2)
+                ss_tot = np.sum((y_slice - np.mean(y_slice))**2)
+                r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                
+                return {'status': 'success', 't2': t2_opt, 'r2': r2, 'A': a_opt, 'C': c_opt}
+                
+            except Exception as e:
+                return {'status': f'Robust fit failed: {e}', 't2': 0, 'r2': 0}
+                
+        return {'status': 'Invalid mode', 't2': 0, 'r2': 0}
+
+    @staticmethod
     def fit_envelope(times, amps):
         """
         Fits an exponential envelope to the peaks of the signal.
