@@ -14,7 +14,9 @@ No per-frame normalization, vertical offsets or new smoothing are applied. The v
 
 The 3D window has its own amplitude/dB switch, independent of the heatmap display option. The existing STFT computation, including its window, overlap and boundary padding behavior, is unchanged. Boundary frames can contain padded samples and should not be interpreted as complete instantaneous spectra.
 
-For large datasets, the surface mesh uses a limited display grid; the caption reports sampling. Slice lines retain all visible frequency bins. Original analysis arrays stay at full resolution. Mesh sampling can omit narrow features between sampled bins; use the slice lines and original heatmap for detailed inspection. Opaque surfaces may occlude rear lines; rotate or lower opacity.
+The surface defaults to opacity 1.00, so overlapping faces do not blend their colors. Face edges are disabled to avoid mesh seams. Lowering opacity explicitly enables transparency again. Time-slice lines are drawn as opaque overlays for visibility; Matplotlib does not clip these overlay lines against foreground surface faces, so rotate the view when inspecting crossings.
+
+For large datasets, the surface mesh uses a limited display grid; the caption reports sampling. Slice lines retain all visible frequency bins. Original analysis arrays stay at full resolution. Mesh sampling can omit narrow features between sampled bins; use the slice lines and original heatmap for detailed inspection.
 
 Verification uses synthetic data: exact time/frequency slice coordinates, unnormalized amplitudes, dB values, camera preservation, invalid inputs and the existing main-window STFT workflow. No real experimental dataset was used for acceptance.
 

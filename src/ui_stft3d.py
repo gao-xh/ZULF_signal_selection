@@ -39,6 +39,7 @@ class StftSurfaceWindow(QMainWindow):
         self.opacity = SliderSpinBox("Surface opacity", 0.1, 1.0,
                                     STFT_3D_SURFACE_ALPHA, step=0.05,
                                     is_float=True, decimals=2)
+        self.opacity.setToolTip("Keep at 1.00 to prevent overlapping surface colors from blending.")
         form.addWidget(self.line_count)
         form.addWidget(self.opacity)
         row = QHBoxLayout()
@@ -142,14 +143,15 @@ class StftSurfaceWindow(QMainWindow):
         x, y = np.meshgrid(times[time_indices], frequencies[freq_indices])
         z = displayed[np.ix_(freq_indices, time_indices)]
         self.surface = self.axis.plot_surface(x, y, z, cmap="viridis", linewidth=0,
-                                              antialiased=True, alpha=float(self.opacity.value()),
+                                              edgecolor="none", antialiased=False,
+                                              alpha=float(self.opacity.value()),
                                               rstride=1, cstride=1)
         if self.show_lines.isChecked():
             for index in self.slice_indices:
                 # Full frequency resolution for each selected spectrum, no offsets.
                 line, = self.axis.plot(np.full(len(frequencies), times[index]), frequencies,
                                        displayed[:, index], color="#142634", linewidth=0.85,
-                                       alpha=0.95)
+                                       alpha=1.0, zorder=3)
                 self.slice_artists.append(line)
         self.axis.set_ylabel("Absolute frequency (Hz)" if folded else "Frequency (Hz)", labelpad=10)
         self.axis.set_zlabel(unit, labelpad=10)
