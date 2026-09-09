@@ -7,8 +7,11 @@ from PySide6.QtWidgets import (
     QPushButton, QSplitter, QScrollArea,
 )
 from matplotlib.figure import Figure
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from src.ui_components import SliderSpinBox
+from src.surface_rendering import FrontLayerSurface
 from src.config import (
     STFT_3D_TIME_LINES, STFT_3D_MAX_TIME_LINES, STFT_3D_SURFACE_ALPHA,
     STFT_3D_MAX_TIME_POINTS, STFT_3D_MAX_FREQUENCY_POINTS,
@@ -39,7 +42,7 @@ class StftSurfaceWindow(QMainWindow):
         self.opacity = SliderSpinBox("Surface opacity", 0.1, 1.0,
                                     STFT_3D_SURFACE_ALPHA, step=0.05,
                                     is_float=True, decimals=2)
-        self.opacity.setToolTip("Keep at 1.00 to prevent overlapping surface colors from blending.")
+        self.opacity.setToolTip("Blend only the nearest surface layer with the background; hidden faces never add color.")
         form.addWidget(self.line_count)
         form.addWidget(self.opacity)
         row = QHBoxLayout()
@@ -142,10 +145,10 @@ class StftSurfaceWindow(QMainWindow):
         unit = "Amplitude (dB re 1 input unit)" if self.log_scale.isChecked() else "Amplitude (input units)"
         x, y = np.meshgrid(times[time_indices], frequencies[freq_indices])
         z = displayed[np.ix_(freq_indices, time_indices)]
-        self.surface = self.axis.plot_surface(x, y, z, cmap="viridis", linewidth=0,
-                                              edgecolor="none", antialiased=False,
-                                              alpha=float(self.opacity.value()),
-                                              rstride=1, cstride=1)
+        self.surface = ScalarMappable(norm=Normalize(vmin=float(displayed.min()),
+                                                     vmax=float(displayed.max())), cmap="viridis")
+        self.surface.set_array(z)
+        self.axis.auto_scale_xyz(x, y, z)
         if self.show_lines.isChecked():
             for index in self.slice_indices:
                 # Full frequency resolution for each selected spectrum, no offsets.
@@ -153,6 +156,11 @@ class StftSurfaceWindow(QMainWindow):
                                        displayed[:, index], color="#142634", linewidth=0.85,
                                        alpha=1.0, zorder=3)
                 self.slice_artists.append(line)
+                # The depth-tested renderer draws only visible line fragments.
+                line.set_visible(False)
+        self.surface_artist = FrontLayerSurface(self.axis, x, y, z, self.surface,
+                                                float(self.opacity.value()), self.slice_artists)
+        self.axis.add_artist(self.surface_artist)
         self.axis.set_ylabel("Absolute frequency (Hz)" if folded else "Frequency (Hz)", labelpad=10)
         self.axis.set_zlabel(unit, labelpad=10)
         self.axis.set_title("STFT surface with constant-time spectrum slices")
@@ -162,7 +170,7 @@ class StftSurfaceWindow(QMainWindow):
             f"{len(times)} time frames × {len(frequencies)} frequency bins | "
             f"{len(self.slice_artists)} time-slice lines | "
             + ("Surface mesh sampled for display; slice lines use all frequency bins. " if sampled else "Full-resolution surface. ")
-            + "Shared amplitude scale; no per-slice normalization. Drag the plot to rotate."
+            + "Front-layer transparency; no stacked colors. Drag the plot to rotate."
         )
         self.toolbar.update()
         self.canvas.draw_idle()
