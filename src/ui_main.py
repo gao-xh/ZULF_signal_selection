@@ -19,6 +19,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from matplotlib.figure import Figure
 
 from src.ui_components import SliderSpinBox
+from src.ui_stft3d import StftSurfaceWindow
 from src.loader import ProgressiveLoader
 from src.processing import Processor, CurveFitter
 from src.validator import SignalValidator
@@ -629,6 +630,7 @@ class MainWindow(QMainWindow):
         self.current_evo_data = None
         self.current_processed_time = None
         self.current_stft_data = None
+        self.stft_surface_window = None
         
         self.batch_results_summary = None
         self.batch_results_details = None
@@ -872,6 +874,11 @@ class MainWindow(QMainWindow):
         self.btn_show_spectrogram = QPushButton("Show Spectrogram")
         self.btn_show_spectrogram.clicked.connect(self.update_spectrogram)
         spec_layout_box.addWidget(self.btn_show_spectrogram)
+
+        self.btn_show_stft3d = QPushButton("Show 3D Surface")
+        self.btn_show_stft3d.setToolTip("Open an independent time-frequency surface with time-slice spectra.")
+        self.btn_show_stft3d.clicked.connect(self.show_stft_surface)
+        spec_layout_box.addWidget(self.btn_show_stft3d)
         
         # Params Row
         row_spec = QHBoxLayout()
@@ -1736,6 +1743,8 @@ class MainWindow(QMainWindow):
         self.current_spec = spec
         self.current_processed_time = time_data
         self.current_stft_data = stft_data
+        if self.stft_surface_window is not None:
+            self.stft_surface_window.invalidate()
         
         # update dynamic ranges
         try:
@@ -2036,7 +2045,31 @@ class MainWindow(QMainWindow):
         # self.fig_spec.tight_layout() 
         self.canvas_spec.draw()
 
-    def update_spectrogram(self):
+    def show_stft_surface(self):
+        """Compute the current STFT and open its independent 3D view."""
+        if not self.update_spectrogram(refresh_surface=False):
+            return
+        if self.stft_surface_window is None:
+            self.stft_surface_window = StftSurfaceWindow(self)
+        if self._refresh_stft_surface():
+            self.stft_surface_window.show()
+            self.stft_surface_window.raise_()
+            self.stft_surface_window.activateWindow()
+
+    def _refresh_stft_surface(self):
+        try:
+            self.stft_surface_window.set_data(
+                self.stft_t, self.stft_f, self.stft_Sxx,
+                (self.freq_min.value(), self.freq_max.value()),
+                folded=self.chk_spec_abs.isChecked(),
+            )
+            return True
+        except ValueError as exc:
+            self.stft_surface_window.invalidate()
+            QMessageBox.warning(self, "3D Surface", str(exc))
+            return False
+
+    def update_spectrogram(self, _checked=False, refresh_surface=True):
         """Compute and display Short-Time Fourier Transform"""
         import scipy.signal
         import scipy.fft
@@ -2238,6 +2271,10 @@ class MainWindow(QMainWindow):
         self.update_stft_t2_visuals()
         
         self.canvas_stft.draw()
+
+        if refresh_surface and self.stft_surface_window is not None and self.stft_surface_window.isVisible():
+            self._refresh_stft_surface()
+        return True
 
     def update_stft_t2_visuals(self, *args):
         """Redraws the T2 data. Called by update_spectrogram or when opacity sliders change."""

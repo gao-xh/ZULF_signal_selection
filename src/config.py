@@ -64,6 +64,13 @@ DEFAULT_ENABLE_SVD = True
 UI_WINDOW_TITLE = "ZULF Signal Selection - Progressive Validator"
 UI_WINDOW_SIZE = (1200, 800)
 
+# Independent STFT surface display; original analysis arrays stay unchanged.
+STFT_3D_TIME_LINES = 12
+STFT_3D_MAX_TIME_LINES = 60
+STFT_3D_SURFACE_ALPHA = 0.85
+STFT_3D_MAX_TIME_POINTS = 160
+STFT_3D_MAX_FREQUENCY_POINTS = 384
+
 # Parameter Ranges for UI Sliders: (Min, Max, Step, Default)
 # Format: 'key': (min, max, step, default)
 UI_PARAM_RANGES = {
