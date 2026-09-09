@@ -35,7 +35,17 @@
     *   **Criterion**: Valid signals must show growth/enhancement consistent with $\sqrt{N}$ scaling (SNR vs Scans), whereas noise should average out or behave randomly.
     *   **Classification**: Distinguish "Signal" (growth) vs "Noise" (random/decay) based on this trend.
 
-#### B. Reference Utilization
+#### B. Architectural Patterns
+*   **Threading Model**: 
+    *   **Main Thread (UI)**: Handles user interaction, plotting, and lightweight updates.
+    *   **Worker Threads (`QThread`)**: Used for all heavy computational tasks to prevent UI freezing.
+        *   `ValidationWorker`: Handles the sequential file loading and signal growth validation.
+        *   `T2MapWorker`: Handles the computationally intensive T2 curve fitting across thousands of STFT frequency bins.
+*   **Separation of Concerns**:
+    *   `src/processing.py`: Mathematical kernels (FFT, Curve Fitting, Signal Processing).
+    *   `src/ui_main.py`: Visualization logic, Thread management, User Interaction. Note: Some visualization-specific math (e.g., grid generation for heatmaps) currently resides here for tight coupling with Matplotlib, but should move to `processing.py` if it grows.
+
+#### C. Reference Utilization
 *   The `references/Data-Process` folder contains robust implementations for:
     *   SVD Denoising (`nmr_processing_lib.processing.filtering`)
     *   FFT & Phasing
@@ -79,13 +89,27 @@
     *   **Signal**: High $R^2$, Positive Slope (Consistent with $\sqrt{N}$ growth).
     *   **Noise**: Low $R^2$, or Flat/Negative Slope (Random phases cancel out or fluctuate unpredictably).
 
-### 5. Final Output & Visualization
+### 5. Standard Visualization
 *   **Macro View (Traffic Light Spectrum)**: A full spectrum view where peaks are color-coded (Green=Signal, Red=Noise, Yellow=Unsure).
 *   **Micro View (Evolution Plot)**: Click on any peak to see its "Growth Curve" ($Intensity$ vs $\sqrt{N}$).
     *   This is the definitive proof for signal validity.
 *   **Control Panel**: Use "Slider + SpinBox" to adjust decision thresholds (e.g., Min $R^2$, Min Slope) in real-time.
 
-### 6. Critical Watchlist (Avoid these pitfalls)
+### 6. Advanced Visualization & T2 Mapping (Global Distribution)
+*   **Concept**:
+    *   A "Pseudo-2D" plot (Frequency vs T2* Decay) similar to DOSY (Diffusion Ordered Spectroscopy).
+    *   Visualizes the distribution of decay times across the entire spectrum to help separate fast-decaying noise from long-lived signals.
+*   **Physics-Linked Resolution**:
+    *   The grid resolution (`nx`, `ny`) is **strictly linked** to the physical resolution of the STFT transform (`df`, `dt`).
+    *   **1 Pixel = 1 STFT Frequency Bin**. This ensures no loss of spectral information during visualization.
+*   **Smoothing Strategy**:
+    *   **Horizontal (Frequency)**: `sigma_x` is fixed small (e.g., 0.5 pixels) to simulate sub-bin resolution sharpening.
+    *   **Vertical (T2)**: `sigma_y` is scaled relative to the total T2 range (e.g., 1.25% of height) to create a "cloud" effect, reflecting the inherent uncertainty in T2 estimation.
+*   **Visual Style**:
+    *   Use **LinearSegmentedColormap** ("Blues") with a custom alpha channel that fades to transparent at low intensities.
+    *   Overlay **Contour Lines** (10%-95%) to emphasize density peaks.
+
+### 7. Critical Watchlist (Avoid these pitfalls)
 
 1.  **Strict Separation of Concerns**:
     *   **Logic in `src/processing.py`**: All mathematical calculations (FFT, fitting, filtering, algorithms) MUST reside here.
@@ -96,19 +120,13 @@
     *   Never hardcode absolute paths (e.g., `C:\Users\...`). Use `pathlib` and relative paths.
     *   Data files should reside in `data/` and be ignored by Git if they are large.
 
-2.  **Reference Code Isolation**:
+3.  **Reference Code Isolation**:
     *   Do not modify files inside `references/Data-Process` directly if possible. Copy useful functions to `src/` or import them if the path is added to `sys.path` (Copying is often safer for decoupling).
 
-3.  **Reproducibility**:
+4.  **Reproducibility**:
     *   Notebooks (`notebooks/`) should be reproducible. Move stable logic from notebooks to `src/` modules frequently.
 
-### 6. Next Steps
-*   [ ] Implement `src/loader.py` with `ProgressiveLoader` class.
-*   [ ] Create `src/validator.py` with regression logic.
-*   [ ] Port key processing functions (FFT, Phase) to `src/processing.py`.
-*   [ ] Create a demo notebook to visualize Signal vs Noise evolution.
-
-### 7. Algorithm Technical Notes (Updated Jan 2026)
+### 8. Algorithm Technical Notes (Updated March 2026)
 
 #### A. Oscillation Removal (Filtered T2*)
 *   **Objective**: Remove low-frequency modulations (e.g., J-coupling beats, ~7Hz) from the T2* decay curve to analyze the pure envelope.
@@ -139,7 +157,21 @@
         *   $\lambda$ (Lambda): Smoothness (1e3 - 1e7). Larger = stiffer baseline.
         *   $p$ (Asymmetry): Weight for positive deviations (0.0001 - 0.01). Smaller = baseline stays lower.
 
-### 8. UI Engineering Guidelines
+#### D. Global T2* Mapping (Pseudo-DOSY)
+*   **Objective**: Visualize the statistical distribution of T2 decay times across the entire spectrum to distinguish coherent signals (Long T2) from noise (Short T2).
+*   **Method**: High-Density STFT Fitting.
+    *   Iterate through **every** frequency bin in the STFT matrix ($10^3 - 10^4$ bins).
+    *   Algorithm: For each frequency $f_i$, extract the time-slice $S(t, f_i)$ and fit the exponential decay model $I = A \cdot e^{-t/T_2}$.
+    *   Filter: Discard fits with $R^2 < \text{Threshold}$ or Amplitude $\approx$ Noise Floor.
+*   **Visualization Logic (Physics-Linked Grid)**:
+    *   **Grid Density**: The heatmap grid dimensions $(n_x, n_y)$ are **strictly derived** from the physical resolution of the raw data.
+        *   $n_x = \text{FreqRange} / df_{STFT}$ (where $df$ is the frequency step of the FFT).
+        *   **Implication**: 1 Pixel on the heatmap $\equiv$ 1 STFT Frequency Bin. This prevents aliasing and ensures no spectral information is lost in the visualization step.
+    *   **Anisotropic Smoothing**:
+        *   **Horizontal ($\sigma_x \approx 0.5$ bin)**: Minimal smoothing applied to the Frequency axis. We want to preserve sharp spectral lines (sub-bin sharpening).
+        *   **Vertical ($\sigma_y \approx 1.25\%$ Range)**: Larger smoothing applied to the T2 Time axis. This creates a "cloud" effect that visually represents the higher uncertainty in T2 estimation compared to frequency.
+
+### 9. UI Engineering Guidelines
 
 #### A. Thread Safety in Heavy Processing
 *   **Problem**: Rapid UI events (e.g., sliding Phase Slider) trigger frequent heavy computations (FFT/Matrix Solvers). Old `QThread` instances may be garbage collected while C++ backend is still executing, causing Segmentation Faults.
@@ -151,7 +183,19 @@
         3.  Move the old worker instance into a `self._zombie_workers` list to keep the Python reference alive until execution finishes naturally.
         4.  Periodically clean up the list.
 
-### 9. Branch-Specific Implementations
+### 10. Branch-Specific Implementations
+#### Feature: Global T2 Distribution & Visualization (Current Work - `feature/T2_Viz`)
+This feature implements a high-level statistical view of the signal decay characteristics across the entire spectrum, akin to a DOSY plot.
+*   **Physics-Aware Grid Resolution**:
+    *   The visualization grid (`nx`, `ny`) is **strictly linked** to the physical resolution of the STFT transform (`df`, `dt`).
+    *   **1 Pixel = 1 STFT Frequency Bin**. This ensures no loss of spectral information during visualization.
+*   **Adaptive Smoothing Kernel**:
+    *   **Horizontal (Frequency)**: `sigma_x` is fixed small (e.g., 0.5 pixels) to simulate sub-bin resolution sharpening.
+    *   **Vertical (T2)**: `sigma_y` is scaled relative to the total T2 range (e.g., 1.25% of height) to create a "cloud" effect, reflecting the inherent uncertainty in T2 estimation.
+*   **Architecture**:
+    *   **Worker Thread**: `T2MapWorker` offloads the computationally expensive curve fitting (looping over thousands of bins) to a background thread to keep the UI responsive.
+    *   **Visualization**: Uses `ax.imshow` with a custom "Blues" colormap (alpha gradient) and `ax.contour` overlay (10-95% levels).
+
 #### Feature: Blake's Phase & Preprocessing (`feature/Blake_phase`)
 This branch implements a distinct processing pipeline inspired by Blake's methodology (see `references/SI_zfnmr_processing.ipynb`):
 *   **Time-Domain Phase Correction**:
@@ -162,6 +206,6 @@ This branch implements a distinct processing pipeline inspired by Blake's method
     *   Settings files saved in this branch include `"version": "blake_phase_v1"`.
     *   `p1` values are **points (int)**, not degrees.
 
-### 10. Future Roadmap (Updated Feb 2026)
+### 11. Future Roadmap (Updated March 2026)
 
 

@@ -2530,102 +2530,112 @@ class MainWindow(QMainWindow):
                                     
                                     # Prepare Grid Points in (Linear X, Log Y)
                                     Xi, Yi_grid_log = np.meshgrid(xi, yi_log)
-                                    Xi_plot, Yi_plot = np.meshgrid(xi, yi) # For plotting (Linear X, Linear Y + SetScale Log)
                                     
-                                    # Interpolate
-                                    # We weight the Amplitude by R2 to suppress artifacts from poor fits
-                                    # Z_visual = Amplitude * (R2)^3 (Relaxed from 4 to 3 to show more structure)
-                                    z_weighted = z_data * (r2_data ** 3) 
+                                    # --- Fix for Linear Scale ---
+                                else:
+                                    # Linear Y-Grid
+                                    y_range = max(y_data) - min(y_data)
+                                    min_y = min(y_data) - y_range * 0.1
+                                    max_y = max(y_data) + y_range * 0.1
                                     
-                                    # Gaussian KDE approach using scatter -> histogram2d -> smooth
-                                    # For log-y scale, we must bin in logarithmic space
+                                    yi = np.linspace(min_y, max_y, ny)
                                     
-                                    # Determine bins (logarithmic for Y if needed)
-                                    x_edges = np.linspace(min_x, max_x, nx)
-                                    if use_log_y:
-                                        y_edges = np.logspace(min_log, max_log, ny) # Use computed log ranges
+                                Xi_plot, Yi_plot = np.meshgrid(xi, yi) # For plotting (Linear X, Linear Y + SetScale Log)
+                                    
+                                # Interpolate
+                                # We weight the Amplitude by R2 to suppress artifacts from poor fits
+                                # Z_visual = Amplitude * (R2)^3 (Relaxed from 4 to 3 to show more structure)
+                                z_weighted = z_data * (r2_data ** 3) 
+                                    
+                                # Gaussian KDE approach using scatter -> histogram2d -> smooth
+                                # For log-y scale, we must bin in logarithmic space
+                                
+                                # Determine bins (logarithmic for Y if needed)
+                                x_edges = np.linspace(min_x, max_x, nx)
+                                if use_log_y:
+                                    y_edges = np.logspace(min_log, max_log, ny) # Use computed log ranges
+                                else:
+                                    # Linear Y padding logic
+                                    y_range = max(y_data) - min(y_data)
+                                    min_y_lin = min(y_data) - y_range * 0.1
+                                    max_y_lin = max(y_data) + y_range * 0.1
+                                    y_edges = np.linspace(min_y_lin, max_y_lin, ny)
+                                    
+                                H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
+                                
+                                # DOSY-Style Smoothing (Resolution-Linked)
+                                # Link (5, 0.5) preference to the new Physics-based Grid.
+                                # Previous Reference: Sigma=(5.0, 0.5) on 400x400 Grid.
+                                
+                                # 1. Horizontal (Frequency): 
+                                # The grid size 'nx' is calculated such that 1 Pixel = 1 STFT Frequency Bin.
+                                # Therefore, fixing sigma_x = 0.5 pixels automatically links the smoothing to the physical resolution.
+                                # (e.g., Higher NFFT -> Finer df -> Higher nx -> Sharper visual peaks in Hz).
+                                # We keep this small (0.5) to preserve the spectral resolution of the analysis.
+                                sigma_x = 0.5 
+                                
+                                # 2. Vertical (T2 Time):
+                                # On 400 grid, 5.0 pix was ~1.25% of screen height.
+                                # This creates the vertical "strip" or "cloud" effect.
+                                # We scale sigma_y dynamically with ny to maintain this visual ratio.
+                                sigma_y = max(2.0, ny * 0.0125) # 1.25% of vertical range (e.g., 5px @ 400, 12px @ 1000)
+                                
+                                # H.T shape is (ny, nx). sigma=(sigma_y, sigma_x)
+                                H_smooth = gaussian_filter(H.T, sigma=(sigma_y, sigma_x)) 
+                                
+                                # Create "Traditional KDE" style Colormap (Blues with transparency)
+                                # "Starts from transparent"
+                                try:
+                                    from matplotlib.colors import LinearSegmentedColormap
+                                    # Get base colormap (Monochrome 'Blues' as requested)
+                                    n_colors = 256
+                                    if hasattr(plt, 'colormaps'):
+                                         # 'Blues' goes from White (0) to Dark Blue (1)
+                                         base_cmap = plt.colormaps['Blues']
                                     else:
-                                        # Linear Y padding logic
-                                        y_range = max(y_data) - min(y_data)
-                                        min_y_lin = min(y_data) - y_range * 0.1
-                                        max_y_lin = max(y_data) + y_range * 0.1
-                                        y_edges = np.linspace(min_y_lin, max_y_lin, ny)
-                                        
-                                    H, xedges, yedges = np.histogram2d(x_data, y_data, bins=[x_edges, y_edges], weights=z_weighted)
+                                         base_cmap = plt.get_cmap('Blues')
                                     
-                                    # DOSY-Style Smoothing (Resolution-Linked)
-                                    # Link (5, 0.5) preference to the new Physics-based Grid.
-                                    # Previous Reference: Sigma=(5.0, 0.5) on 400x400 Grid.
+                                    cmap_colors = base_cmap(np.linspace(0, 1, n_colors))
                                     
-                                    # 1. Horizontal (Frequency): 
-                                    # On 400 grid, 0.5 pix was very sharp (~0.1%). 
-                                    # On Physics Grid (nx), 1 pixel = 1 STFT Bin. 
-                                    # Sigma=0.5 here acts as "Sub-bin resolution" sharpening or "Nearest Neighbor" feel.
-                                    # We keep this fixed to preserve spectral resolution.
-                                    sigma_x = 0.5 
+                                    # Soften the Transparency Fade
+                                    # Fade the alpha channel for the bottom 25%
+                                    fade_len = int(n_colors * 0.25) 
                                     
-                                    # 2. Vertical (T2 Time):
-                                    # On 400 grid, 5.0 pix was ~1.25% of screen height.
-                                    # This creates the vertical "strip" or "cloud" effect.
-                                    # We scale sigma_y dynamically with ny to maintain this visual ratio.
-                                    sigma_y = max(2.0, ny * 0.0125) # 1.25% of vertical range (e.g., 5px @ 400, 12px @ 1000)
+                                    # Gamma correction for alpha: pow(x, 0.6) makes faint things more visible
+                                    alpha_curve = np.linspace(0, 1, fade_len) ** 0.6
+                                    alphas = np.ones(n_colors)
+                                    alphas[:fade_len] = alpha_curve
                                     
-                                    # H.T shape is (ny, nx). sigma=(sigma_y, sigma_x)
-                                    H_smooth = gaussian_filter(H.T, sigma=(sigma_y, sigma_x)) 
+                                    cmap_colors[:, 3] = alphas
                                     
-                                    # Create "Traditional KDE" style Colormap (Blues with transparency)
-                                    # "Starts from transparent"
-                                    try:
-                                        from matplotlib.colors import LinearSegmentedColormap
-                                        # Get base colormap (Monochrome 'Blues' as requested)
-                                        n_colors = 256
-                                        if hasattr(plt, 'colormaps'):
-                                             # 'Blues' goes from White (0) to Dark Blue (1)
-                                             base_cmap = plt.colormaps['Blues']
-                                        else:
-                                             base_cmap = plt.get_cmap('Blues')
-                                        
-                                        cmap_colors = base_cmap(np.linspace(0, 1, n_colors))
-                                        
-                                        # Soften the Transparency Fade
-                                        # Fade the alpha channel for the bottom 25%
-                                        fade_len = int(n_colors * 0.25) 
-                                        
-                                        # Gamma correction for alpha: pow(x, 0.6) makes faint things more visible
-                                        alpha_curve = np.linspace(0, 1, fade_len) ** 0.6
-                                        alphas = np.ones(n_colors)
-                                        alphas[:fade_len] = alpha_curve
-                                        
-                                        cmap_colors[:, 3] = alphas
-                                        
-                                        custom_cmap = LinearSegmentedColormap.from_list('blues_transparent', cmap_colors)
-                                    except Exception:
-                                        print("Error creating custom colormap, falling back to Blues")
-                                        custom_cmap = 'Blues'
+                                    custom_cmap = LinearSegmentedColormap.from_list('blues_transparent', cmap_colors)
+                                except Exception:
+                                    print("Error creating custom colormap, falling back to Blues")
+                                    custom_cmap = 'Blues'
 
-                                    # Generate coordinate grids for pcolormesh (Gouraud shading needs centers)
-                                    # Calculate bin centers to match dimensions of H (nx-1, ny-1)
-                                    x_centers = (xedges[:-1] + xedges[1:]) / 2
-                                    y_centers = (yedges[:-1] + yedges[1:]) / 2
-                                    X, Y = np.meshgrid(x_centers, y_centers)
-                                    
-                                    # "Gouraud" shading interpolates colors between grid points -> Smooth visual
-                                    map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap=custom_cmap, shading='gouraud')
-                                    
-                                    # Add Contour Lines (User Request: "Add contour lines")
-                                    try:
-                                        z_max = np.max(H_smooth)
-                                        if z_max > 0:
-                                            # Create levels from 10% to 90% of max
-                                            levels = np.linspace(z_max * 0.1, z_max * 0.95, 6)
-                                            # Use thin black lines with transparency for subtle effect
-                                            self.ax_t2_new.contour(X, Y, H_smooth, levels=levels, 
-                                                                  colors='black', linewidths=0.5, alpha=0.3)
-                                    except Exception as e_cont:
-                                        print(f"Contour warning: {e_cont}")
-                                    
-                                    if use_log_y:
-                                         self.ax_t2_new.set_yscale('log')
+                                # Generate coordinate grids for pcolormesh (Gouraud shading needs centers)
+                                # Calculate bin centers to match dimensions of H (nx-1, ny-1)
+                                x_centers = (xedges[:-1] + xedges[1:]) / 2
+                                y_centers = (yedges[:-1] + yedges[1:]) / 2
+                                X, Y = np.meshgrid(x_centers, y_centers)
+                                
+                                # "Gouraud" shading interpolates colors between grid points -> Smooth visual
+                                map_obj = self.ax_t2_new.pcolormesh(X, Y, H_smooth, cmap=custom_cmap, shading='gouraud')
+                                
+                                # Add Contour Lines (User Request: "Add contour lines")
+                                try:
+                                    z_max = np.max(H_smooth)
+                                    if z_max > 0:
+                                        # Create levels from 10% to 90% of max
+                                        levels = np.linspace(z_max * 0.1, z_max * 0.95, 6)
+                                        # Use thin black lines with transparency for subtle effect
+                                        self.ax_t2_new.contour(X, Y, H_smooth, levels=levels, 
+                                                              colors='black', linewidths=0.5, alpha=0.3)
+                                except Exception as e_cont:
+                                    print(f"Contour warning: {e_cont}")
+                                
+                                if use_log_y:
+                                     self.ax_t2_new.set_yscale('log')
                                          
                             except Exception as e:
                                 print(f"Contour/Griddata Error: {e}")
