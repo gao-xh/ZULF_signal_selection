@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont, QFontDatabase
+from matplotlib.backend_bases import MouseEvent
 from src.ui_stft3d import StftSurfaceWindow
 
 
@@ -73,6 +74,69 @@ class SurfaceTests(unittest.TestCase):
             self.window.set_data(self.times, self.freqs, self.mag, (1000, 2000))
         with self.assertRaises(ValueError):
             self.window.set_data(self.times, self.freqs, self.mag.T, (0, 250))
+
+    def test_axes_zoom_independently_and_survive_redraw(self):
+        self.window.set_data(self.times, self.freqs, self.mag, (0, 250))
+        self.window.axis.view_init(elev=37, azim=15)
+        for name in "xyz":
+            before = {key: getattr(self.window.axis, f"get_{key}lim")() for key in "xyz"}
+            control = self.window.axis_controls[name]
+            control.zoom.setValue(2.0)
+            actual = getattr(self.window.axis, f"get_{name}lim")()
+            self.assertAlmostEqual(actual[1] - actual[0], (control.home[1] - control.home[0]) / 2)
+            for other in set("xyz") - {name}:
+                np.testing.assert_allclose(getattr(self.window.axis, f"get_{other}lim")(), before[other])
+        limits = {name: getattr(self.window.axis, f"get_{name}lim")() for name in "xyz"}
+        self.window.opacity.spinbox.setValue(.6)
+        self.window.redraw()
+        for name in "xyz":
+            np.testing.assert_allclose(getattr(self.window.axis, f"get_{name}lim")(), limits[name])
+        self.assertEqual(self.window.axis.elev, 37)
+        self.assertEqual(self.window.axis.azim, 15)
+        self.window.axis_controls["y"].reset_button.click()
+        np.testing.assert_allclose(self.window.axis.get_ylim(), self.window._home_limits["y"])
+        np.testing.assert_allclose(self.window.axis.get_xlim(), limits["x"])
+
+    def test_numeric_bounds_wheel_and_toolbar_synchronization(self):
+        self.window.set_data(self.times, self.freqs, self.mag, (0, 250))
+        control = self.window.axis_controls["x"]
+        control.lower.setValue(.5)
+        control.upper.setValue(1.5)
+        control.upper.editingFinished.emit()
+        np.testing.assert_allclose(self.window.axis.get_xlim(), [.5, 1.5])
+        control.lower.setValue(3)
+        control.lower.editingFinished.emit()
+        self.assertEqual(control.lower.value(), .5)
+        before = self.window.axis.get_zlim()
+        self.window.wheel_axis.setCurrentIndex(2)
+        self.window.canvas.draw()
+        bbox = self.window.axis.bbox
+        event = MouseEvent("scroll_event", self.window.canvas, (bbox.x0 + bbox.x1) / 2,
+                           (bbox.y0 + bbox.y1) / 2, button="up", step=1)
+        self.window.canvas.callbacks.process("scroll_event", event)
+        after = self.window.axis.get_zlim()
+        self.assertAlmostEqual(after[1] - after[0], (before[1] - before[0]) / 1.2)
+        np.testing.assert_allclose(self.window.axis.get_xlim(), [.5, 1.5])
+        self.window.axis.set_ylim(50, 180)
+        self.assertEqual(self.window.axis_controls["y"].lower.value(), 50)
+        self.assertEqual(self.window.axis_controls["y"].upper.value(), 180)
+        self.window.reset_axis_limits()
+        for name in "xyz":
+            np.testing.assert_allclose(getattr(self.window.axis, f"get_{name}lim")(), self.window._home_limits[name])
+
+    def test_log_switch_resets_only_z_and_new_data_resets_all_axes(self):
+        self.window.set_data(self.times, self.freqs, self.mag, (0, 250))
+        self.window.set_axis_limits("x", .5, 1.5)
+        self.window.set_axis_limits("y", 50, 150)
+        self.window.set_axis_limits("z", .1, .2)
+        self.window.log_scale.setChecked(True)
+        self.window.redraw()
+        np.testing.assert_allclose(self.window.axis.get_xlim(), [.5, 1.5])
+        np.testing.assert_allclose(self.window.axis.get_ylim(), [50, 150])
+        self.assertLess(self.window.axis.get_zlim()[0], 0)
+        self.window.set_data(self.times, self.freqs, self.mag, (0, 250))
+        for name in "xyz":
+            np.testing.assert_allclose(getattr(self.window.axis, f"get_{name}lim")(), self.window._home_limits[name])
 
     def test_dense_surface_keeps_full_resolution_slice_lines(self):
         frequencies = np.linspace(0, 300, 1000)
