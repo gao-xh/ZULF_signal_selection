@@ -2308,7 +2308,7 @@ class MainWindow(QMainWindow):
             # Clear Projection
             if hasattr(self, 'ax_proj_new'):
                 self.ax_proj_new.clear()
-                self.ax_proj_new.yaxis.set_ticklabels([])
+                self.ax_proj_new.tick_params(axis='y', which='both', labelleft=False, labelright=False)
                 self.ax_proj_new.grid(True, axis='y', alpha=0.4)
 
         # 2. Check Data
@@ -2479,7 +2479,8 @@ class MainWindow(QMainWindow):
                 
                 # Right: T2 Projection (Histogram/Distribution)
                 self.ax_proj_new = self.fig_t2_new.add_subplot(gs[1, 1], sharey=self.ax_t2_new)
-                self.ax_proj_new.yaxis.set_ticklabels([]) # Hide Y labels
+                # Hide only this axis's labels; the formatter is shared with the main map.
+                self.ax_proj_new.tick_params(axis='y', which='both', labelleft=False, labelright=False)
                 
                 if len(t2_vals_f) > 0:
                     # --- Main Plot ---
